@@ -1,0 +1,508 @@
+import customtkinter as ctk
+import psutil
+import subprocess
+import threading
+import time
+import platform
+import datetime
+import shutil
+import collections
+import tkinter as tk
+from dataclasses import dataclass, field
+from typing import List, Dict
+from config_manager import ConfigManager
+from overlay import CompactOverlay
+from gpu_utils import GPUFetcher
+from cpu_temp_utils import CPUTempFetcher
+import ctypes
+import os
+import sys
+
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+def get_color_by_value(val, metric_type="usage"):
+    try:
+        v = float(val)
+    except:
+        return "gray"
+    
+    if metric_type == "temp":
+        if v < 60: return "#2ECC71"  # green
+        elif v <= 80: return "#F1C40F"  # yellow
+        else: return "#E74C3C"  # red
+    elif metric_type == "usage":
+        if v < 60: return "#2ECC71"
+        elif v <= 85: return "#F1C40F"
+        else: return "#E74C3C"
+    return "white"
+
+@dataclass
+class SystemData:
+    uptime: str = "--"
+    cpu_use: float = 0.0
+    cpu_temp: str = "--"
+    cpu_freq: str = "--"
+    cpu_cores: List[float] = field(default_factory=list)
+    
+    gpu_name: str = "--"
+    gpu_use: str = "--"
+    gpu_temp: str = "--"
+    gpu_mem: str = "--"
+    gpu_pow: str = "--"
+    gpu_pow_limit: str = "--"
+    gpu_c_clock: str = "--"
+    gpu_m_clock: str = "--"
+    gpu_fan: str = "--"
+    
+    ram_pct: float = 0.0
+    ram_used: float = 0.0
+    ram_total: float = 0.0
+    swap_pct: float = 0.0
+    
+    disk_data: Dict[str, dict] = field(default_factory=dict)
+    
+    dl_speed: float = 0.0
+    ul_speed: float = 0.0
+    net_tot_dl: float = 0.0
+    net_tot_ul: float = 0.0
+
+class LightMonitorApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        self.title("LightMonitor Pro V2")
+        self.geometry("600x750")
+        self.resizable(True, True)
+        try:
+            self.iconbitmap(resource_path('icon.ico'))
+        except: pass
+        
+        self.is_topmost = True
+        self.attributes("-topmost", self.is_topmost)
+
+        # Header Frame
+        self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.header_frame.pack(fill="x", padx=10, pady=(15, 5))
+        
+        self.title_label = ctk.CTkLabel(self.header_frame, text="System Monitor", font=ctk.CTkFont(size=24, weight="bold"))
+        self.title_label.pack(side="left")
+        
+        self.topmost_switch = ctk.CTkSwitch(self.header_frame, text="Always on Top", command=self.toggle_topmost)
+        self.topmost_switch.select()
+        self.topmost_switch.pack(side="right")
+        
+        self.hud_btn = ctk.CTkButton(self.header_frame, text="HUD Mode", width=80, command=self.toggle_overlay)
+        self.hud_btn.pack(side="right", padx=10)
+        
+        self.config_mgr = ConfigManager()
+        self.overlay_window = None
+        
+        # Tabs
+        self.tabview = ctk.CTkTabview(self)
+        self.tabview.pack(fill="both", expand=True, padx=10, pady=10)
+        self.tab_overview = self.tabview.add("Overview")
+        self.tab_cpu = self.tabview.add("CPU")
+        self.tab_gpu = self.tabview.add("GPU")
+        self.tab_storage = self.tabview.add("Storage & Network")
+        self.tab_settings = self.tabview.add("HUD Settings")
+
+        # History Data (60 points ~ 2 minutes at 2s interval)
+        self.hist_cpu = collections.deque([0]*60, maxlen=60)
+        self.hist_ram = collections.deque([0]*60, maxlen=60)
+        self.hist_gpu = collections.deque([0]*60, maxlen=60)
+
+        # Thread safety
+        self.data_lock = threading.Lock()
+        self.gpu_fetcher = GPUFetcher()
+        self.cpu_fetcher = CPUTempFetcher()
+        
+        self._build_overview_ui()
+        self._build_cpu_ui()
+        self._build_gpu_ui()
+        self._build_storage_ui()
+        self._build_settings_ui()
+
+        # Initialize tracking vars
+        self.last_net_io = psutil.net_io_counters()
+        self.last_disk_io = psutil.disk_io_counters(perdisk=True)
+        self.last_time = time.time()
+
+        self.running = True
+        self.update_thread = threading.Thread(target=self.fetch_data_loop)
+        self.update_thread.daemon = True
+        self.update_thread.start()
+
+    def toggle_topmost(self):
+        self.is_topmost = bool(self.topmost_switch.get())
+        self.attributes("-topmost", self.is_topmost)
+
+    def toggle_overlay(self):
+        if self.overlay_window is None or not self.overlay_window.winfo_exists():
+            self.overlay_window = CompactOverlay(self, self.config_mgr)
+            self.hud_btn.configure(text="Close HUD")
+        else:
+            self.overlay_window.destroy()
+            self.overlay_window = None
+            self.hud_btn.configure(text="HUD Mode")
+
+    def draw_graph(self, canvas, data, color):
+        canvas.delete("all")
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        if w <= 1 or h <= 1: return
+        
+        dx = w / 59.0
+        points = []
+        for i, val in enumerate(data):
+            x = i * dx
+            y = h - (val / 100.0 * h)
+            points.append(x)
+            points.append(y)
+            
+        if len(points) >= 4:
+            canvas.create_line(*points, fill=color, width=2)
+
+    def _build_overview_ui(self):
+        # CPU
+        self.ov_cpu_lbl = ctk.CTkLabel(self.tab_overview, text="CPU Usage: --%", font=ctk.CTkFont(size=14, weight="bold"))
+        self.ov_cpu_lbl.pack(anchor="w", padx=10, pady=(10,0))
+        self.ov_cpu_canvas = tk.Canvas(self.tab_overview, bg="#2b2b2b", highlightthickness=0, height=60)
+        self.ov_cpu_canvas.pack(fill="x", padx=10, pady=5)
+        
+        # RAM
+        self.ov_ram_lbl = ctk.CTkLabel(self.tab_overview, text="RAM Usage: --%", font=ctk.CTkFont(size=14, weight="bold"))
+        self.ov_ram_lbl.pack(anchor="w", padx=10, pady=(10,0))
+        self.ov_ram_canvas = tk.Canvas(self.tab_overview, bg="#2b2b2b", highlightthickness=0, height=60)
+        self.ov_ram_canvas.pack(fill="x", padx=10, pady=5)
+
+        # GPU
+        self.ov_gpu_lbl = ctk.CTkLabel(self.tab_overview, text="GPU Usage: --%", font=ctk.CTkFont(size=14, weight="bold"))
+        self.ov_gpu_lbl.pack(anchor="w", padx=10, pady=(10,0))
+        if self.gpu_fetcher.is_valid():
+            self.ov_gpu_canvas = tk.Canvas(self.tab_overview, bg="#2b2b2b", highlightthickness=0, height=60)
+            self.ov_gpu_canvas.pack(fill="x", padx=10, pady=5)
+        else:
+            l = ctk.CTkLabel(self.tab_overview, text="No Supported GPU detected", font=ctk.CTkFont(size=12, slant="italic"))
+            l.pack(anchor="w", padx=20, pady=5)
+
+    def _build_cpu_ui(self):
+        self.cpu_frame = ctk.CTkScrollableFrame(self.tab_cpu)
+        self.cpu_frame.pack(fill="both", expand=True)
+        
+        self.sys_title = ctk.CTkLabel(self.cpu_frame, text="💻 System", font=ctk.CTkFont(size=16, weight="bold"))
+        self.sys_title.pack(anchor="w", padx=10, pady=(5, 0))
+        self.uptime_lbl = ctk.CTkLabel(self.cpu_frame, text="Uptime: --", font=ctk.CTkFont(size=14))
+        self.uptime_lbl.pack(anchor="w", padx=20, pady=(0, 15))
+
+        cpu_name = platform.processor() or "Unknown CPU"
+        self.cpu_title = ctk.CTkLabel(self.cpu_frame, text=f"⚙️ CPU: {cpu_name}", font=ctk.CTkFont(size=16, weight="bold"))
+        self.cpu_title.pack(anchor="w", padx=10, pady=(5, 0))
+        
+        self.cpu_usage_lbl = ctk.CTkLabel(self.cpu_frame, text="Total Usage: -- %", font=ctk.CTkFont(size=14))
+        self.cpu_usage_lbl.pack(anchor="w", padx=20)
+        self.cpu_prog = ctk.CTkProgressBar(self.cpu_frame)
+        self.cpu_prog.set(0)
+        self.cpu_prog.pack(fill="x", padx=20, pady=(5, 10))
+        
+        self.cpu_temp_lbl = ctk.CTkLabel(self.cpu_frame, text="Temp: -- °C", font=ctk.CTkFont(size=14))
+        self.cpu_temp_lbl.pack(anchor="w", padx=20)
+        self.cpu_freq_lbl = ctk.CTkLabel(self.cpu_frame, text="Clock: -- MHz", font=ctk.CTkFont(size=14))
+        self.cpu_freq_lbl.pack(anchor="w", padx=20, pady=(0, 10))
+
+        self.cores_grid = ctk.CTkFrame(self.cpu_frame, fg_color="transparent")
+        self.cores_grid.pack(fill="x", padx=20, pady=5)
+        self.core_labels = []
+        num_cores = psutil.cpu_count(logical=True) or 0
+        for i in range(num_cores):
+            lbl = ctk.CTkLabel(self.cores_grid, text=f"C{i:02d}: --%", font=ctk.CTkFont(size=12))
+            lbl.grid(row=i//5, column=i%5, padx=10, pady=2, sticky="w")
+            self.core_labels.append(lbl)
+
+    def _build_gpu_ui(self):
+        self.gpu_scroll = ctk.CTkScrollableFrame(self.tab_gpu)
+        self.gpu_scroll.pack(fill="both", expand=True)
+
+        self.gpu_title = ctk.CTkLabel(self.gpu_scroll, text="🎮 GPU", font=ctk.CTkFont(size=16, weight="bold"))
+        self.gpu_title.pack(anchor="w", padx=10, pady=(5, 0))
+        
+        if not self.gpu_fetcher.is_valid():
+            l = ctk.CTkLabel(self.gpu_scroll, text="No Supported GPU detected.", font=ctk.CTkFont(size=12, slant="italic"))
+            l.pack(anchor="w", padx=20, pady=5)
+            return
+
+        self.gpu_name_lbl = ctk.CTkLabel(self.gpu_scroll, text="Model: --", font=ctk.CTkFont(size=14))
+        self.gpu_name_lbl.pack(anchor="w", padx=20, pady=(0,10))
+        
+        self.gpu_usage_lbl = ctk.CTkLabel(self.gpu_scroll, text="Usage: -- %", font=ctk.CTkFont(size=14))
+        self.gpu_usage_lbl.pack(anchor="w", padx=20)
+        self.gpu_prog = ctk.CTkProgressBar(self.gpu_scroll)
+        self.gpu_prog.set(0)
+        self.gpu_prog.pack(fill="x", padx=20, pady=(5, 10))
+
+        self.gpu_temp_lbl = ctk.CTkLabel(self.gpu_scroll, text="Temp: -- °C (Fan: --)", font=ctk.CTkFont(size=14))
+        self.gpu_temp_lbl.pack(anchor="w", padx=20)
+        self.gpu_mem_lbl = ctk.CTkLabel(self.gpu_scroll, text="VRAM: -- MB", font=ctk.CTkFont(size=14))
+        self.gpu_mem_lbl.pack(anchor="w", padx=20)
+        self.gpu_power_lbl = ctk.CTkLabel(self.gpu_scroll, text="Power: -- W / -- W", font=ctk.CTkFont(size=14))
+        self.gpu_power_lbl.pack(anchor="w", padx=20)
+        self.gpu_clock_lbl = ctk.CTkLabel(self.gpu_scroll, text="Core/Mem: -- / -- MHz", font=ctk.CTkFont(size=14))
+        self.gpu_clock_lbl.pack(anchor="w", padx=20, pady=(0, 5))
+
+    def _build_storage_ui(self):
+        self.st_scroll = ctk.CTkScrollableFrame(self.tab_storage)
+        self.st_scroll.pack(fill="both", expand=True)
+
+        self.ram_title = ctk.CTkLabel(self.st_scroll, text="🧠 Memory", font=ctk.CTkFont(size=16, weight="bold"))
+        self.ram_title.pack(anchor="w", padx=10, pady=(5, 0))
+        
+        self.ram_usage_lbl = ctk.CTkLabel(self.st_scroll, text="RAM: -- % ( -- / -- GB )", font=ctk.CTkFont(size=14))
+        self.ram_usage_lbl.pack(anchor="w", padx=20)
+        self.ram_prog = ctk.CTkProgressBar(self.st_scroll)
+        self.ram_prog.set(0)
+        self.ram_prog.pack(fill="x", padx=20, pady=(5, 10))
+
+        self.swap_usage_lbl = ctk.CTkLabel(self.st_scroll, text="Swap: -- %", font=ctk.CTkFont(size=14))
+        self.swap_usage_lbl.pack(anchor="w", padx=20, pady=(0, 15))
+
+        self.disk_title = ctk.CTkLabel(self.st_scroll, text="💾 Storage & I/O", font=ctk.CTkFont(size=16, weight="bold"))
+        self.disk_title.pack(anchor="w", padx=10, pady=(5, 0))
+        
+        self.disk_widgets = {}
+        partitions = psutil.disk_partitions(all=False)
+        for p in partitions:
+            try:
+                psutil.disk_usage(p.mountpoint)
+                drive_letter = p.mountpoint.replace('\\', '')
+                
+                lbl = ctk.CTkLabel(self.st_scroll, text=f"{drive_letter}: -- % (Free: -- GB)", font=ctk.CTkFont(size=14))
+                lbl.pack(anchor="w", padx=20)
+                prog = ctk.CTkProgressBar(self.st_scroll)
+                prog.set(0)
+                prog.pack(fill="x", padx=20, pady=(2, 5))
+                
+                self.disk_widgets[drive_letter] = {"lbl": lbl, "prog": prog, "mount": p.mountpoint}
+            except Exception as e:
+                print(f"[Disk init] Skipping {p.mountpoint}: {e}")
+                
+        self.global_io_lbl = ctk.CTkLabel(self.st_scroll, text="Global Disk I/O - Read: -- MB/s | Write: -- MB/s", font=ctk.CTkFont(size=12))
+        self.global_io_lbl.pack(anchor="w", padx=20, pady=(5, 15))
+
+        self.net_title = ctk.CTkLabel(self.st_scroll, text="🌐 Network", font=ctk.CTkFont(size=16, weight="bold"))
+        self.net_title.pack(anchor="w", padx=10, pady=(5, 0))
+        
+        self.net_dl_lbl = ctk.CTkLabel(self.st_scroll, text="DL Speed: -- KB/s", font=ctk.CTkFont(size=14))
+        self.net_dl_lbl.pack(anchor="w", padx=20)
+        self.net_ul_lbl = ctk.CTkLabel(self.st_scroll, text="UL Speed: -- KB/s", font=ctk.CTkFont(size=14))
+        self.net_ul_lbl.pack(anchor="w", padx=20)
+        self.net_total_lbl = ctk.CTkLabel(self.st_scroll, text="Total: DL -- GB | UL -- GB", font=ctk.CTkFont(size=14))
+        self.net_total_lbl.pack(anchor="w", padx=20, pady=(0, 5))
+    def _build_settings_ui(self):
+        self.set_scroll = ctk.CTkScrollableFrame(self.tab_settings)
+        self.set_scroll.pack(fill="both", expand=True)
+
+        lbl = ctk.CTkLabel(self.set_scroll, text="HUD Overlay Metrics", font=ctk.CTkFont(size=16, weight="bold"))
+        lbl.pack(anchor="w", padx=10, pady=(5, 10))
+
+        self.metric_vars = {}
+        available_metrics = ["cpu_usage", "cpu_temp", "cpu_freq", "gpu_usage", "gpu_temp", "vram_usage", "ram_usage", "swap_usage", "net_speed", "disk_io"]
+        for p in psutil.disk_partitions(all=False):
+            available_metrics.append(f"disk_usage_{p.mountpoint.replace('\\\\', '')}")
+
+        enabled = self.config_mgr.get_overlay_conf().get("enabled_metrics", [])
+
+        for m in available_metrics:
+            var = ctk.BooleanVar(value=(m in enabled))
+            self.metric_vars[m] = var
+            cb = ctk.CTkCheckBox(self.set_scroll, text=m, variable=var, command=self._save_overlay_settings)
+            cb.pack(anchor="w", padx=20, pady=2)
+
+        lbl2 = ctk.CTkLabel(self.set_scroll, text="HUD Options", font=ctk.CTkFont(size=16, weight="bold"))
+        lbl2.pack(anchor="w", padx=10, pady=(20, 10))
+
+        self.ct_var = ctk.BooleanVar(value=self.config_mgr.get_overlay_conf().get("click_through", False))
+        self.ct_cb = ctk.CTkCheckBox(self.set_scroll, text="Click-Through Mode (HUD ignores mouse clicks)", variable=self.ct_var, command=self._save_overlay_settings)
+        self.ct_cb.pack(anchor="w", padx=20, pady=2)
+
+    def _save_overlay_settings(self):
+        conf = self.config_mgr.get_overlay_conf()
+        enabled = [m for m, var in self.metric_vars.items() if var.get()]
+        conf["enabled_metrics"] = enabled
+        conf["click_through"] = self.ct_var.get()
+        self.config_mgr.save_config()
+        if self.overlay_window and self.overlay_window.winfo_exists():
+            self.overlay_window.rebuild_if_needed()
+
+    def fetch_data_loop(self):
+        while self.running:
+            d = SystemData()
+            try:
+                try:
+                    bt = datetime.datetime.fromtimestamp(psutil.boot_time())
+                    d.uptime = str(datetime.datetime.now() - bt).split('.')[0]
+                except Exception as e: print(f"[Uptime] {e}")
+
+                try:
+                    d.cpu_use = psutil.cpu_percent(interval=None)
+                    d.cpu_cores = psutil.cpu_percent(interval=None, percpu=True)
+                except Exception as e: print(f"[CPU Usage] {e}")
+                    
+                try: d.cpu_freq = str(round(psutil.cpu_freq().current))
+                except Exception as e: print(f"[CPU Freq] {e}")
+                
+                main_active = self.state() != 'iconic' and self.state() != 'withdrawn'
+                overlay_active = self.overlay_window is not None and self.overlay_window.winfo_exists()
+                enabled = self.config_mgr.get_overlay_conf().get("enabled_metrics", [])
+                needs_cpu_temp = main_active or (overlay_active and "cpu_temp" in enabled)
+                needs_gpu = main_active or (overlay_active and any(m in enabled for m in ["gpu_usage", "gpu_temp", "vram_usage"]))
+
+                if needs_cpu_temp:
+                    self.cpu_fetcher.fetch(d)
+
+                try:
+                    ram = psutil.virtual_memory()
+                    d.ram_pct = ram.percent
+                    d.ram_used = ram.used / (1024**3)
+                    d.ram_total = ram.total / (1024**3)
+                    d.swap_pct = psutil.swap_memory().percent
+                except Exception as e: print(f"[Memory] {e}")
+
+                if self.gpu_fetcher.is_valid() and needs_gpu:
+                    self.gpu_fetcher.fetch(d)
+
+                with self.data_lock:
+                    current_time = time.time()
+                    current_net_io = psutil.net_io_counters()
+                    current_disk_io = psutil.disk_io_counters(perdisk=True)
+                    time_diff = current_time - self.last_time
+
+                    for letter, widgets in self.disk_widgets.items():
+                        try:
+                            usage = psutil.disk_usage(widgets["mount"])
+                            d.disk_data[letter] = {"pct": usage.percent, "free": usage.free / (1024**3)}
+                        except Exception as e: print(f"[Disk Usage {letter}] {e}")
+
+                    d_read = d_write = 0.0
+                    if time_diff > 0:
+                        total_read_now = sum(disk.read_bytes for disk in current_disk_io.values())
+                        total_write_now = sum(disk.write_bytes for disk in current_disk_io.values())
+                        total_read_last = sum(disk.read_bytes for disk in self.last_disk_io.values())
+                        total_write_last = sum(disk.write_bytes for disk in self.last_disk_io.values())
+                        
+                        d_read = (total_read_now - total_read_last) / time_diff / (1024**2)
+                        d_write = (total_write_now - total_write_last) / time_diff / (1024**2)
+
+                        d.dl_speed = (current_net_io.bytes_recv - self.last_net_io.bytes_recv) / time_diff / 1024
+                        d.ul_speed = (current_net_io.bytes_sent - self.last_net_io.bytes_sent) / time_diff / 1024
+                    
+                    d.disk_data["GLOBAL_IO"] = {"read": d_read, "write": d_write}
+                    d.net_tot_dl = current_net_io.bytes_recv / (1024**3)
+                    d.net_tot_ul = current_net_io.bytes_sent / (1024**3)
+
+                    self.last_net_io = current_net_io
+                    self.last_disk_io = current_disk_io
+                    self.last_time = current_time
+                    
+                    # Update History
+                    self.hist_cpu.append(d.cpu_use)
+                    self.hist_ram.append(d.ram_pct)
+                    try:
+                        self.hist_gpu.append(float(d.gpu_use))
+                    except:
+                        self.hist_gpu.append(0.0)
+
+                self.after(0, self.update_ui, d)
+
+            except Exception as e:
+                print(f"[Main Loop] Error fetching data: {e}")
+            
+            time.sleep(2) 
+
+    def update_ui(self, d: SystemData):
+        # COLORS
+        c_cpu = get_color_by_value(d.cpu_use, "usage")
+        t_cpu = get_color_by_value(d.cpu_temp, "temp")
+        c_ram = get_color_by_value(d.ram_pct, "usage")
+        c_gpu = get_color_by_value(d.gpu_use, "usage")
+        t_gpu = get_color_by_value(d.gpu_temp, "temp")
+
+        # OVERVIEW TAB
+        self.ov_cpu_lbl.configure(text=f"CPU Usage: {d.cpu_use}%", text_color=c_cpu)
+        self.draw_graph(self.ov_cpu_canvas, self.hist_cpu, c_cpu)
+        
+        self.ov_ram_lbl.configure(text=f"RAM Usage: {d.ram_pct}%", text_color=c_ram)
+        self.draw_graph(self.ov_ram_canvas, self.hist_ram, c_ram)
+
+        if self.gpu_fetcher.is_valid():
+            self.ov_gpu_lbl.configure(text=f"GPU Usage: {d.gpu_use}%", text_color=c_gpu)
+            self.draw_graph(self.ov_gpu_canvas, self.hist_gpu, c_gpu)
+
+        # CPU TAB
+        self.uptime_lbl.configure(text=f"Uptime: {d.uptime}")
+        self.cpu_usage_lbl.configure(text=f"Total Usage: {d.cpu_use}%", text_color=c_cpu)
+        self.cpu_prog.set(d.cpu_use / 100.0)
+        self.cpu_prog.configure(progress_color=c_cpu)
+        self.cpu_temp_lbl.configure(text=f"Temp: {d.cpu_temp} °C", text_color=t_cpu)
+        self.cpu_freq_lbl.configure(text=f"Clock: {d.cpu_freq} MHz")
+        
+        for i, core_val in enumerate(d.cpu_cores):
+            if i < len(self.core_labels):
+                self.core_labels[i].configure(text=f"C{i:02d}: {core_val}%", text_color=get_color_by_value(core_val, "usage"))
+
+        # GPU TAB
+        if self.gpu_fetcher.is_valid() and d.gpu_name != "--":
+            self.gpu_name_lbl.configure(text=f"Model: {d.gpu_name}")
+            self.gpu_usage_lbl.configure(text=f"Usage: {d.gpu_use}%", text_color=c_gpu)
+            try:
+                self.gpu_prog.set(float(d.gpu_use) / 100.0)
+                self.gpu_prog.configure(progress_color=c_gpu)
+            except: pass
+            
+            fan_str = d.gpu_fan + "%" if "N/A" not in d.gpu_fan else "N/A"
+            self.gpu_temp_lbl.configure(text=f"Temp: {d.gpu_temp} °C (Fan: {fan_str})", text_color=t_gpu)
+            self.gpu_mem_lbl.configure(text=f"VRAM: {d.gpu_mem} MB")
+            self.gpu_power_lbl.configure(text=f"Power: {d.gpu_pow} W / {d.gpu_pow_limit} W")
+            self.gpu_clock_lbl.configure(text=f"Core/Mem: {d.gpu_c_clock} / {d.gpu_m_clock} MHz")
+        
+        # STORAGE TAB
+        self.ram_usage_lbl.configure(text=f"RAM: {d.ram_pct}% ({d.ram_used:.1f} / {d.ram_total:.1f} GB)", text_color=c_ram)
+        self.ram_prog.set(d.ram_pct / 100.0)
+        self.ram_prog.configure(progress_color=c_ram)
+        self.swap_usage_lbl.configure(text=f"Swap (Pagefile): {d.swap_pct}%", text_color=get_color_by_value(d.swap_pct, "usage"))
+
+        for letter, w in self.disk_widgets.items():
+            if letter in d.disk_data:
+                v = d.disk_data[letter]
+                c_disk = get_color_by_value(v['pct'], "usage")
+                w["lbl"].configure(text=f"{letter}: {v['pct']}% (Free: {v['free']:.1f} GB)", text_color=c_disk)
+                w["prog"].set(v['pct'] / 100.0)
+                w["prog"].configure(progress_color=c_disk)
+                
+        if "GLOBAL_IO" in d.disk_data:
+            g_io = d.disk_data["GLOBAL_IO"]
+            self.global_io_lbl.configure(text=f"Global Disk I/O - Read: {g_io['read']:.1f} MB/s | Write: {g_io['write']:.1f} MB/s")
+
+        dl_str = f"{d.dl_speed:.1f} KB/s" if d.dl_speed < 1024 else f"{d.dl_speed/1024:.2f} MB/s"
+        ul_str = f"{d.ul_speed:.1f} KB/s" if d.ul_speed < 1024 else f"{d.ul_speed/1024:.2f} MB/s"
+        
+        self.net_dl_lbl.configure(text=f"DL Speed: {dl_str}")
+        self.net_ul_lbl.configure(text=f"UL Speed: {ul_str}")
+        self.net_total_lbl.configure(text=f"Total: DL {d.net_tot_dl:.1f} GB | UL {d.net_tot_ul:.1f} GB")
+        
+        if self.overlay_window and self.overlay_window.winfo_exists():
+            self.overlay_window.update_data(d)
+
+if __name__ == "__main__":
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except:
+        pass
+    app = LightMonitorApp()
+    app.mainloop()
