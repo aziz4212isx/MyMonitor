@@ -36,6 +36,7 @@ class CompactOverlay(ctk.CTkToplevel):
         for widget in self.main_frame.winfo_children():
             widget.destroy()
         self.metric_labels.clear()
+        self.metric_buffer = {}  # Bug #10: always initialize before any early return
 
         metrics = self.conf.get("enabled_metrics", [])
         if not metrics:

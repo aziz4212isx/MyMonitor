@@ -1,3 +1,5 @@
+import os
+import sys
 import customtkinter as ctk
 import psutil
 import subprocess
@@ -27,11 +29,12 @@ except:
 logger = logging.getLogger("LightMonitor")
 logger.setLevel(logging.ERROR)
 try:
-    fh = logging.FileHandler(os.path.join(os.getenv('APPDATA') or os.path.expanduser('~'), 'LightMonitor', 'error_log.txt'))
+    _log_dir = os.path.join(os.getenv('APPDATA') or os.path.expanduser('~'), 'LightMonitor')
+    os.makedirs(_log_dir, exist_ok=True)
+    fh = logging.FileHandler(os.path.join(_log_dir, 'error_log.txt'))
     logger.addHandler(fh)
-except: pass
-import os
-import sys
+except Exception:
+    pass  # Logging is non-critical; silently skip if unavailable
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -163,22 +166,44 @@ class LightMonitorApp(ctk.CTk):
         self.last_disk_io = psutil.disk_io_counters(perdisk=True)
         self.last_time = time.time()
 
+        self._window_active = True   # Bug #2/#3: thread-safe flag for UI state
+        self._overlay_active = False   # Bug #3: thread-safe flag for overlay state
+        self._watchdog_after_id = None
+
         self.running = True
-        self.update_thread = threading.Thread(target=self.fetch_data_loop)
-        self.update_thread.daemon = True
+        self.update_thread = threading.Thread(target=self.fetch_data_loop, daemon=True)
         self.update_thread.start()
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)  # Bug #6
 
     def toggle_topmost(self):
         self.is_topmost = bool(self.topmost_switch.get())
         self.attributes("-topmost", self.is_topmost)
 
+    def _on_close(self):
+        """Bug #6: Graceful shutdown — stop thread, cancel callbacks, destroy window."""
+        self.running = False
+        if self._watchdog_after_id:
+            try:
+                self.after_cancel(self._watchdog_after_id)
+            except Exception:
+                pass
+        if self.overlay_window:
+            try:
+                self.overlay_window.destroy()
+            except Exception:
+                pass
+        self.destroy()
+
     def toggle_overlay(self):
         if self.overlay_window is None or not self.overlay_window.winfo_exists():
             self.overlay_window = CompactOverlay(self, self.config_mgr)
+            self._overlay_active = True   # Bug #3
             self.hud_btn.configure(text="Close HUD")
         else:
             self.overlay_window.destroy()
             self.overlay_window = None
+            self._overlay_active = False  # Bug #3
             self.hud_btn.configure(text="HUD Mode")
 
     def draw_graph(self, canvas, data, color):
@@ -354,7 +379,7 @@ class LightMonitorApp(ctk.CTk):
         self.metric_vars = {}
         available_metrics = ["cpu_usage", "cpu_temp", "cpu_freq", "gpu_usage", "gpu_temp", "vram_usage", "ram_usage", "swap_usage", "net_speed", "disk_io"]
         for p in psutil.disk_partitions(all=False):
-            available_metrics.append(f"disk_usage_{p.mountpoint.replace('\\\\', '')}")
+            available_metrics.append(f"disk_usage_{p.mountpoint.replace(chr(92), '').replace('/', '')}")
 
         enabled = self.config_mgr.get_overlay_conf().get("enabled_metrics", [])
 
@@ -466,11 +491,17 @@ class LightMonitorApp(ctk.CTk):
         feat["hotkey_enabled"] = self.feat_hotkey_var.get()
         self._apply_hotkey()
         feat["alerts_enabled"] = self.alert_en_var.get()
+        # Bug #7: Validate threshold range 1-150°C
         try:
-            feat["alert_cpu_temp"] = int(self.alert_cpu_entry.get())
-            feat["alert_gpu_temp"] = int(self.alert_gpu_entry.get())
-        except:
-            pass
+            cpu_thresh = int(self.alert_cpu_entry.get())
+            feat["alert_cpu_temp"] = max(1, min(150, cpu_thresh))
+        except ValueError:
+            feat["alert_cpu_temp"] = 85  # silently reset to safe default
+        try:
+            gpu_thresh = int(self.alert_gpu_entry.get())
+            feat["alert_gpu_temp"] = max(1, min(150, gpu_thresh))
+        except ValueError:
+            feat["alert_gpu_temp"] = 85
 
         self.config_mgr.save_config()
         self._apply_startup_registry(feat["run_on_startup"])
@@ -480,26 +511,35 @@ class LightMonitorApp(ctk.CTk):
 
 
     def _apply_hotkey(self):
+        # Bug #13: unhook_all() is too aggressive; use targeted removal
         try:
             import keyboard
-            keyboard.unhook_all()
+            if hasattr(self, '_hotkey_ref') and self._hotkey_ref is not None:
+                try:
+                    keyboard.remove_hotkey(self._hotkey_ref)
+                except Exception:
+                    pass
+                self._hotkey_ref = None
             if self.config_mgr.get_features_conf().get("hotkey_enabled"):
-                keyboard.add_hotkey('ctrl+alt+m', lambda: self.after(0, self.toggle_overlay))
-        except:
+                self._hotkey_ref = keyboard.add_hotkey('ctrl+alt+m', lambda: self.after(0, self.toggle_overlay))
+        except Exception:
             pass
 
     def watchdog_check(self):
-        if self.running and time.time() - self.last_time > 15:
+        if not self.running:  # Bug #5: stop scheduling after close
+            return
+        if time.time() - self.last_time > 15:
             logger.error("[Watchdog] Thread frozen for >15s. Restarting fetch_data_loop...")
             self.running = False
             try:
-                self.data_thread.join(timeout=1.0)
-            except: pass
+                self.update_thread.join(timeout=1.0)  # Bug #4: correct name
+            except Exception:
+                pass
             self.running = True
-            self.data_thread = threading.Thread(target=self.fetch_data_loop, daemon=True)
-            self.data_thread.start()
-        
-        self.after(5000, self.watchdog_check)
+            self.update_thread = threading.Thread(target=self.fetch_data_loop, daemon=True)
+            self.update_thread.start()
+
+        self._watchdog_after_id = self.after(5000, self.watchdog_check)  # Bug #5: save ID
 
     def _apply_startup_registry(self, enable):
         import winreg
@@ -538,11 +578,11 @@ class LightMonitorApp(ctk.CTk):
                     d.cpu_freq = str(round(freq.current)) if freq else "N/A"
                 except Exception as e: logger.error(f"[CPU Freq] {e}")
                 
-                main_active = self.state() != 'iconic' and self.state() != 'withdrawn'
-                overlay_active = self.overlay_window is not None and self.overlay_window.winfo_exists()
+                # Bug #2/#3: Use thread-safe flags instead of Tkinter API calls
+                overlay_active = self._overlay_active
                 enabled = self.config_mgr.get_overlay_conf().get("enabled_metrics", [])
-                needs_cpu_temp = main_active or (overlay_active and "cpu_temp" in enabled)
-                needs_gpu = main_active or (overlay_active and any(m in enabled for m in ["gpu_usage", "gpu_temp", "vram_usage"]))
+                needs_cpu_temp = True  # Always fetch; overhead is minimal
+                needs_gpu = True
 
                 if needs_cpu_temp:
                     self.cpu_fetcher.fetch(d)
@@ -561,7 +601,7 @@ class LightMonitorApp(ctk.CTk):
                 with self.data_lock:
                     current_time = time.time()
                     current_net_io = psutil.net_io_counters()
-                    current_disk_io = psutil.disk_io_counters(perdisk=True)
+                    current_disk_io = psutil.disk_io_counters(perdisk=True) or {}  # Bug #9: can return None
                     time_diff = current_time - self.last_time
 
                     for letter, widgets in self.disk_widgets.items():
@@ -578,10 +618,12 @@ class LightMonitorApp(ctk.CTk):
                         self.last_time = current_time
                         time_diff = 0
                     elif time_diff >= 0.1:
-                        total_read_now = sum(disk.read_bytes for disk in current_disk_io.values())
-                        total_write_now = sum(disk.write_bytes for disk in current_disk_io.values())
-                        total_read_last = sum(disk.read_bytes for disk in self.last_disk_io.values())
-                        total_write_last = sum(disk.write_bytes for disk in self.last_disk_io.values())
+                        # Bug #8: only sum drives present in BOTH snapshots to avoid spike on USB insert
+                        common_disks = current_disk_io.keys() & self.last_disk_io.keys()
+                        total_read_now = sum(current_disk_io[k].read_bytes for k in common_disks)
+                        total_write_now = sum(current_disk_io[k].write_bytes for k in common_disks)
+                        total_read_last = sum(self.last_disk_io[k].read_bytes for k in common_disks)
+                        total_write_last = sum(self.last_disk_io[k].write_bytes for k in common_disks)
                         
                         d_read = max(0.0, (total_read_now - total_read_last) / time_diff / (1024**2))
                         d_write = max(0.0, (total_write_now - total_write_last) / time_diff / (1024**2))
