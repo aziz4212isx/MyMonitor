@@ -382,102 +382,263 @@ class LightMonitorApp(ctk.CTk):
         self.set_scroll = ctk.CTkScrollableFrame(self.tab_settings)
         self.set_scroll.pack(fill="both", expand=True)
 
-        # 1. HUD SECTION
-        lbl = ctk.CTkLabel(self.set_scroll, text="HUD Overlay Options", font=ctk.CTkFont(size=16, weight="bold"))
-        lbl.pack(anchor="w", padx=10, pady=(5, 10))
+        overlay_conf = self.config_mgr.get_overlay_conf()
+        feat_conf    = self.config_mgr.get_features_conf()
+
+        # ── Helper: section card ──────────────────────────────────────
+        def make_card(parent, icon, title):
+            card = ctk.CTkFrame(parent, corner_radius=10, fg_color="#1e1e2e",
+                                border_width=1, border_color="#333355")
+            card.pack(fill="x", padx=12, pady=(8, 4))
+            hdr = ctk.CTkFrame(card, fg_color="#252540", corner_radius=8)
+            hdr.pack(fill="x", padx=0, pady=0)
+            ctk.CTkLabel(hdr, text=f"  {icon}  {title}",
+                         font=ctk.CTkFont(size=14, weight="bold"),
+                         anchor="w").pack(anchor="w", padx=10, pady=6)
+            body = ctk.CTkFrame(card, fg_color="transparent")
+            body.pack(fill="x", padx=4, pady=(0, 6))
+            return body
+
+        # ── Helper: table row (toggle) ────────────────────────────────
+        def make_toggle_row(parent, label, desc, var, cmd=None, row=0, note=None):
+            f = ctk.CTkFrame(parent, fg_color="transparent")
+            f.pack(fill="x", padx=8, pady=2)
+            # left: label + desc stacked
+            left = ctk.CTkFrame(f, fg_color="transparent")
+            left.pack(side="left", fill="x", expand=True)
+            ctk.CTkLabel(left, text=label, font=ctk.CTkFont(size=13, weight="bold"),
+                         anchor="w").pack(anchor="w")
+            ctk.CTkLabel(left, text=desc,
+                         font=ctk.CTkFont(size=11), text_color="#888899",
+                         anchor="w", wraplength=340).pack(anchor="w")
+            if note:
+                ctk.CTkLabel(left, text=f"⚠ {note}",
+                             font=ctk.CTkFont(size=10), text_color="#F1C40F",
+                             anchor="w").pack(anchor="w")
+            # right: switch
+            sw = ctk.CTkSwitch(f, text="", variable=var, width=44,
+                               command=cmd if cmd else self._save_settings)
+            sw.pack(side="right", padx=8, pady=4)
+            # divider
+            ctk.CTkFrame(parent, height=1, fg_color="#2a2a3a").pack(fill="x", padx=8)
+            return sw
+
+        # ── Helper: slider row ────────────────────────────────────────
+        def make_slider_row(parent, lbl_widget, slider_widget, desc):
+            f = ctk.CTkFrame(parent, fg_color="transparent")
+            f.pack(fill="x", padx=8, pady=4)
+            left = ctk.CTkFrame(f, fg_color="transparent")
+            left.pack(side="left", fill="x", expand=True)
+            lbl_widget.configure(master=left, anchor="w",
+                                 font=ctk.CTkFont(size=13, weight="bold"))
+            lbl_widget.pack(anchor="w")
+            ctk.CTkLabel(left, text=desc,
+                         font=ctk.CTkFont(size=11), text_color="#888899",
+                         anchor="w").pack(anchor="w")
+            slider_widget.configure(master=f, width=150)
+            slider_widget.pack(side="right", padx=8, pady=4)
+            ctk.CTkFrame(parent, height=1, fg_color="#2a2a3a").pack(fill="x", padx=8)
+
+        # ════════════════════════════════════════════════════════════
+        # SECTION 1 — HUD Metrics
+        # ════════════════════════════════════════════════════════════
+        body1 = make_card(self.set_scroll, "📊", "Metrik HUD")
+
+        ctk.CTkLabel(body1,
+                     text="Pilih data yang ditampilkan di overlay HUD. Centang untuk aktifkan.",
+                     font=ctk.CTkFont(size=11), text_color="#888899",
+                     anchor="w", wraplength=500).pack(anchor="w", padx=10, pady=(4, 6))
 
         self.metric_vars = {}
-        available_metrics = ["cpu_usage", "cpu_temp", "cpu_freq", "gpu_usage", "gpu_temp", "vram_usage", "ram_usage", "swap_usage", "net_speed", "disk_io"]
+        metric_labels_map = {
+            "cpu_usage":  ("CPU Usage",      "Persentase pemakaian CPU"),
+            "cpu_temp":   ("CPU Temp",        "Suhu prosesor dalam °C"),
+            "cpu_freq":   ("CPU Clock",       "Frekuensi kerja CPU (MHz)"),
+            "gpu_usage":  ("GPU Usage",       "Persentase pemakaian GPU"),
+            "gpu_temp":   ("GPU Temp",        "Suhu GPU dalam °C"),
+            "vram_usage": ("VRAM",            "Memori video yang terpakai"),
+            "ram_usage":  ("RAM Usage",       "Pemakaian memori utama"),
+            "swap_usage": ("Swap/Pagefile",   "Pemakaian virtual memory"),
+            "net_speed":  ("Net Speed",       "Kecepatan download & upload"),
+            "disk_io":    ("Disk I/O",        "Kecepatan baca/tulis disk global"),
+        }
+        available_metrics = list(metric_labels_map.keys())
         for p in psutil.disk_partitions(all=False):
-            available_metrics.append(f"disk_usage_{p.mountpoint.replace(chr(92), '').replace('/', '')}")
+            key = f"disk_usage_{p.mountpoint.replace(chr(92), '').replace('/', '')}"
+            drive = p.mountpoint.replace('\\', '').replace('/', '')
+            metric_labels_map[key] = (f"Drive {drive}", f"Kapasitas drive {drive}")
+            available_metrics.append(key)
 
-        enabled = self.config_mgr.get_overlay_conf().get("enabled_metrics", [])
+        enabled = overlay_conf.get("enabled_metrics", [])
 
-        hud_grid = ctk.CTkFrame(self.set_scroll, fg_color="transparent")
-        hud_grid.pack(fill="x", padx=20, pady=5)
+        # Table header
+        hdr_row = ctk.CTkFrame(body1, fg_color="#252540", corner_radius=6)
+        hdr_row.pack(fill="x", padx=8, pady=(0, 4))
+        ctk.CTkLabel(hdr_row, text="Aktif", font=ctk.CTkFont(size=11, weight="bold"),
+                     width=50, anchor="center").grid(row=0, column=0, padx=4, pady=3)
+        ctk.CTkLabel(hdr_row, text="Metrik", font=ctk.CTkFont(size=11, weight="bold"),
+                     width=120, anchor="w").grid(row=0, column=1, padx=4, pady=3, sticky="w")
+        ctk.CTkLabel(hdr_row, text="Keterangan", font=ctk.CTkFont(size=11, weight="bold"),
+                     anchor="w").grid(row=0, column=2, padx=4, pady=3, sticky="w")
+        hdr_row.columnconfigure(2, weight=1)
+
         for i, m in enumerate(available_metrics):
+            disp, desc = metric_labels_map.get(m, (m, ""))
             var = ctk.BooleanVar(value=(m in enabled))
             self.metric_vars[m] = var
-            cb = ctk.CTkCheckBox(hud_grid, text=m, variable=var, command=self._save_settings)
-            cb.grid(row=i//3, column=i%3, padx=10, pady=2, sticky="w")
+            bg = "#1e1e2e" if i % 2 == 0 else "#222235"
+            row_f = ctk.CTkFrame(body1, fg_color=bg, corner_radius=4)
+            row_f.pack(fill="x", padx=8, pady=1)
+            cb = ctk.CTkCheckBox(row_f, text="", variable=var, width=30,
+                                 command=self._save_settings)
+            cb.grid(row=0, column=0, padx=10, pady=4)
+            ctk.CTkLabel(row_f, text=disp, font=ctk.CTkFont(size=12, weight="bold"),
+                         width=120, anchor="w").grid(row=0, column=1, padx=4, pady=4, sticky="w")
+            ctk.CTkLabel(row_f, text=desc, font=ctk.CTkFont(size=11),
+                         text_color="#888899", anchor="w").grid(row=0, column=2, padx=4, pady=4, sticky="w")
+            row_f.columnconfigure(2, weight=1)
 
-        self.ct_var = ctk.BooleanVar(value=self.config_mgr.get_overlay_conf().get("click_through", False))
-        self.ct_cb = ctk.CTkCheckBox(self.set_scroll, text="Click-Through Mode (HUD ignores mouse clicks)", variable=self.ct_var, command=self._save_settings)
-        self.ct_cb.pack(anchor="w", padx=20, pady=5)
+        # ════════════════════════════════════════════════════════════
+        # SECTION 2 — HUD Tampilan
+        # ════════════════════════════════════════════════════════════
+        body2 = make_card(self.set_scroll, "🎨", "Tampilan HUD")
 
-        self.hud_opac_lbl = ctk.CTkLabel(self.set_scroll, text=f"Background Opacity: {self.config_mgr.get_overlay_conf().get('transparency', 0.85):.2f}")
-        self.hud_opac_lbl.pack(anchor="w", padx=20, pady=(5, 0))
-        self.hud_opac_slider = ctk.CTkSlider(self.set_scroll, from_=0.1, to=1.0, command=self._update_opacity_lbl)
-        self.hud_opac_slider.set(self.config_mgr.get_overlay_conf().get("transparency", 0.85))
-        self.hud_opac_slider.pack(fill="x", padx=20, pady=(0, 10))
+        # Click-through
+        self.ct_var = ctk.BooleanVar(value=overlay_conf.get("click_through", False))
+        make_toggle_row(body2, "Click-Through Mode",
+                        "HUD tidak merespons klik mouse — klik akan diteruskan ke aplikasi di bawahnya.",
+                        self.ct_var)
 
-        # --- HUD CUSTOMIZATION ---
-        cust_frame = ctk.CTkFrame(self.set_scroll, fg_color="transparent")
-        cust_frame.pack(fill="x", padx=20, pady=5)
-        
-        ctk.CTkLabel(cust_frame, text="Layout Mode:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        self.hud_layout_var = ctk.StringVar(value=self.config_mgr.get_overlay_conf().get("layout", "RTSS Compact"))
-        self.hud_layout_menu = ctk.CTkOptionMenu(cust_frame, values=["Classic (List)", "RTSS Compact"], variable=self.hud_layout_var, command=lambda x: self._save_settings())
-        self.hud_layout_menu.grid(row=0, column=1, sticky="w", padx=5, pady=2)
-        
-        ctk.CTkLabel(cust_frame, text="Color Theme:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
-        self.hud_theme_var = ctk.StringVar(value=self.config_mgr.get_overlay_conf().get("theme", "Cyan"))
-        self.hud_theme_menu = ctk.CTkOptionMenu(cust_frame, values=["Cyan", "Razer Green", "Afterburner Orange", "Pink", "White"], variable=self.hud_theme_var, command=lambda x: self._save_settings())
-        self.hud_theme_menu.grid(row=1, column=1, sticky="w", padx=5, pady=2)
-        
-        self.hud_font_lbl = ctk.CTkLabel(cust_frame, text=f"Font Size: {self.config_mgr.get_overlay_conf().get('font_size', 12)}")
-        self.hud_font_lbl.grid(row=2, column=0, sticky="w", padx=5, pady=2)
-        self.hud_font_slider = ctk.CTkSlider(cust_frame, from_=8, to=20, number_of_steps=12, command=self._update_font_lbl)
-        self.hud_font_slider.set(self.config_mgr.get_overlay_conf().get("font_size", 12))
-        self.hud_font_slider.grid(row=2, column=1, sticky="ew", padx=5, pady=2)
-        
-        # 2. FEATURES SECTION
-        feat_conf = self.config_mgr.get_features_conf()
-        
-        lbl_f = ctk.CTkLabel(self.set_scroll, text="Core Features", font=ctk.CTkFont(size=16, weight="bold"))
-        lbl_f.pack(anchor="w", padx=10, pady=(20, 10))
+        # Opacity slider
+        self.hud_opac_lbl = ctk.CTkLabel(body2,
+            text=f"Opacity HUD: {overlay_conf.get('transparency', 0.85):.0%}")
+        self.hud_opac_slider = ctk.CTkSlider(body2, from_=0.1, to=1.0,
+                                              command=self._update_opacity_lbl)
+        self.hud_opac_slider.set(overlay_conf.get("transparency", 0.85))
+        make_slider_row(body2, self.hud_opac_lbl, self.hud_opac_slider,
+                        "Transparansi jendela HUD (0.1 = hampir transparan, 1.0 = penuh)")
+
+        # Font size slider
+        self.hud_font_lbl = ctk.CTkLabel(body2,
+            text=f"Ukuran Font: {overlay_conf.get('font_size', 12)} px")
+        self.hud_font_slider = ctk.CTkSlider(body2, from_=8, to=20, number_of_steps=12,
+                                              command=self._update_font_lbl)
+        self.hud_font_slider.set(overlay_conf.get("font_size", 12))
+        make_slider_row(body2, self.hud_font_lbl, self.hud_font_slider,
+                        "Ukuran teks pada overlay (8–20 px)")
+
+        # Layout + Theme — tabel 2 kolom
+        lt_frame = ctk.CTkFrame(body2, fg_color="transparent")
+        lt_frame.pack(fill="x", padx=8, pady=6)
+        lt_frame.columnconfigure(1, weight=1)
+        lt_frame.columnconfigure(3, weight=1)
+
+        ctk.CTkLabel(lt_frame, text="Layout:", font=ctk.CTkFont(size=12, weight="bold"),
+                     anchor="w").grid(row=0, column=0, padx=(8, 4), pady=4, sticky="w")
+        self.hud_layout_var = ctk.StringVar(value=overlay_conf.get("layout", "RTSS Compact"))
+        ctk.CTkOptionMenu(lt_frame, values=["Classic (List)", "RTSS Compact"],
+                          variable=self.hud_layout_var,
+                          command=lambda x: self._save_settings()).grid(
+                              row=0, column=1, padx=4, pady=4, sticky="ew")
+
+        ctk.CTkLabel(lt_frame, text="Tema Warna:", font=ctk.CTkFont(size=12, weight="bold"),
+                     anchor="w").grid(row=0, column=2, padx=(16, 4), pady=4, sticky="w")
+        self.hud_theme_var = ctk.StringVar(value=overlay_conf.get("theme", "Cyan"))
+        ctk.CTkOptionMenu(lt_frame, values=["Cyan", "Razer Green", "Afterburner Orange", "Pink", "White"],
+                          variable=self.hud_theme_var,
+                          command=lambda x: self._save_settings()).grid(
+                              row=0, column=3, padx=4, pady=4, sticky="ew")
+
+        ctk.CTkLabel(lt_frame, text="RTSS Compact: metrik dikelompokkan per baris (CPU/GPU/RAM/DSK/NET).\nClassic List: tiap metrik satu baris sendiri.",
+                     font=ctk.CTkFont(size=10), text_color="#666677",
+                     anchor="w", justify="left").grid(
+                         row=1, column=0, columnspan=4, padx=8, pady=(0, 4), sticky="w")
+
+        # ════════════════════════════════════════════════════════════
+        # SECTION 3 — Fitur
+        # ════════════════════════════════════════════════════════════
+        body3 = make_card(self.set_scroll, "⚙️", "Fitur")
 
         self.feat_top5_var = ctk.BooleanVar(value=feat_conf.get("top5_process", False))
-        ctk.CTkCheckBox(self.set_scroll, text="Show Top 5 Process (CPU/RAM Consumer)", variable=self.feat_top5_var, command=self._save_settings).pack(anchor="w", padx=20, pady=2)
+        make_toggle_row(body3, "Top 5 Proses",
+                        "Tampilkan 5 proses dengan konsumsi CPU & RAM tertinggi di tab Overview.",
+                        self.feat_top5_var)
 
         self.feat_csv_var = ctk.BooleanVar(value=feat_conf.get("csv_logging", False))
-        ctk.CTkCheckBox(self.set_scroll, text="Log Data to CSV", variable=self.feat_csv_var, command=self._save_settings).pack(anchor="w", padx=20, pady=2)
-        
+        make_toggle_row(body3, "Log ke CSV",
+                        "Rekam data CPU, GPU, RAM ke file log.csv setiap 2 detik. File disimpan di folder AppData/LightMonitor.",
+                        self.feat_csv_var)
+
         self.feat_startup_var = ctk.BooleanVar(value=feat_conf.get("run_on_startup", False))
-        ctk.CTkCheckBox(self.set_scroll, text="Run on Windows Startup", variable=self.feat_startup_var, command=self._save_settings).pack(anchor="w", padx=20, pady=2)
+        make_toggle_row(body3, "Jalankan saat Startup",
+                        "Daftarkan aplikasi ke registry Windows agar otomatis berjalan saat login.",
+                        self.feat_startup_var)
 
         self.feat_hotkey_var = ctk.BooleanVar(value=feat_conf.get("hotkey_enabled", False))
-        ctk.CTkCheckBox(self.set_scroll, text="Enable Global Hotkey (Ctrl+Alt+M to toggle HUD)\n*Requires Run As Administrator*", variable=self.feat_hotkey_var, command=self._save_settings).pack(anchor="w", padx=20, pady=(2, 10))
+        make_toggle_row(body3, "Global Hotkey  Ctrl+Alt+M",
+                        "Toggle HUD overlay menggunakan keyboard shortcut dari aplikasi mana pun.",
+                        self.feat_hotkey_var,
+                        note="Butuh Run as Administrator agar hotkey bekerja di semua aplikasi.")
 
-
-        # 3. ALERTS SECTION
-        lbl_a = ctk.CTkLabel(self.set_scroll, text="Alerts & Thresholds", font=ctk.CTkFont(size=16, weight="bold"))
-        lbl_a.pack(anchor="w", padx=10, pady=(20, 10))
+        # ════════════════════════════════════════════════════════════
+        # SECTION 4 — Alert Suhu
+        # ════════════════════════════════════════════════════════════
+        body4 = make_card(self.set_scroll, "🔔", "Alert Suhu")
 
         self.alert_en_var = ctk.BooleanVar(value=feat_conf.get("alerts_enabled", False))
-        ctk.CTkCheckBox(self.set_scroll, text="Enable Windows Notifications & Sound", variable=self.alert_en_var, command=self._save_settings).pack(anchor="w", padx=20, pady=5)
+        make_toggle_row(body4, "Aktifkan Alert Suhu",
+                        "Tampilkan notifikasi + bunyi jika suhu CPU/GPU melampaui batas yang ditentukan. Cooldown 60 detik.",
+                        self.alert_en_var)
 
-        temp_frame = ctk.CTkFrame(self.set_scroll, fg_color="transparent")
-        temp_frame.pack(fill="x", padx=20, pady=2)
-        
-        ctk.CTkLabel(temp_frame, text="CPU Alert Temp (°C):").pack(side="left")
-        self.alert_cpu_entry = ctk.CTkEntry(temp_frame, width=50)
-        self.alert_cpu_entry.insert(0, str(feat_conf.get("alert_cpu_temp", 85)))
-        self.alert_cpu_entry.pack(side="left", padx=10)
-        
-        ctk.CTkLabel(temp_frame, text="GPU Alert Temp (°C):").pack(side="left", padx=(20,0))
-        self.alert_gpu_entry = ctk.CTkEntry(temp_frame, width=50)
-        self.alert_gpu_entry.insert(0, str(feat_conf.get("alert_gpu_temp", 85)))
-        self.alert_gpu_entry.pack(side="left", padx=10)
+        # Threshold table
+        thresh_frame = ctk.CTkFrame(body4, fg_color="#252540", corner_radius=6)
+        thresh_frame.pack(fill="x", padx=8, pady=6)
 
-        ctk.CTkButton(self.set_scroll, text="Save Settings", command=self._save_settings, width=120).pack(anchor="w", padx=20, pady=20)
+        rows_data = [
+            ("🔥 CPU Alert (°C)", "Batas suhu CPU. Jika terlampaui, alert muncul.", "alert_cpu_entry",
+             str(feat_conf.get("alert_cpu_temp", 85))),
+            ("🔥 GPU Alert (°C)", "Batas suhu GPU. Rentang wajar: 70–95°C.", "alert_gpu_entry",
+             str(feat_conf.get("alert_gpu_temp", 85))),
+        ]
+        for i, (label, desc, attr, default) in enumerate(rows_data):
+            bg = "#1e1e2e" if i % 2 == 0 else "#222235"
+            r = ctk.CTkFrame(thresh_frame, fg_color=bg, corner_radius=4)
+            r.pack(fill="x", padx=4, pady=2)
+            ctk.CTkLabel(r, text=label, font=ctk.CTkFont(size=12, weight="bold"),
+                         width=160, anchor="w").grid(row=0, column=0, padx=10, pady=6, sticky="w")
+            ctk.CTkLabel(r, text=desc, font=ctk.CTkFont(size=11),
+                         text_color="#888899", anchor="w").grid(
+                             row=0, column=1, padx=4, pady=6, sticky="w")
+            entry = ctk.CTkEntry(r, width=60, justify="center",
+                                 placeholder_text="°C")
+            entry.insert(0, default)
+            entry.grid(row=0, column=2, padx=10, pady=6)
+            r.columnconfigure(1, weight=1)
+            setattr(self, attr, entry)
+
+        # ════════════════════════════════════════════════════════════
+        # Save button
+        # ════════════════════════════════════════════════════════════
+        save_frame = ctk.CTkFrame(self.set_scroll, fg_color="transparent")
+        save_frame.pack(fill="x", padx=12, pady=(8, 16))
+        ctk.CTkButton(save_frame, text="💾  Simpan Pengaturan",
+                      command=self._save_settings,
+                      width=180, height=36,
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      fg_color="#3b3bcc", hover_color="#5555ee",
+                      corner_radius=8).pack(side="left", padx=4)
+        ctk.CTkLabel(save_frame,
+                     text="Pengaturan tersimpan otomatis saat toggle. Tombol ini untuk memastikan semua tersimpan.",
+                     font=ctk.CTkFont(size=10), text_color="#555566",
+                     anchor="w", wraplength=320).pack(side="left", padx=12)
+
 
     def _update_font_lbl(self, val):
         val = int(val)
-        self.hud_font_lbl.configure(text=f"Font Size: {val}")
+        self.hud_font_lbl.configure(text=f"Ukuran Font: {val} px")
 
     def _update_opacity_lbl(self, val):
-        self.hud_opac_lbl.configure(text=f"Background Opacity: {val:.2f}")
+        self.hud_opac_lbl.configure(text=f"Opacity HUD: {val:.0%}")
         if self.overlay_window and self.overlay_window.winfo_exists():
             self.overlay_window.attributes("-alpha", val)
 
