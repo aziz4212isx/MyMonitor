@@ -2,12 +2,10 @@ import os
 import sys
 import customtkinter as ctk
 import psutil
-import subprocess
 import threading
 import time
 import platform
 import datetime
-import shutil
 import collections
 import tkinter as tk
 from dataclasses import dataclass, field
@@ -578,13 +576,8 @@ class LightMonitorApp(ctk.CTk):
                     d.cpu_freq = str(round(freq.current)) if freq else "N/A"
                 except Exception as e: logger.error(f"[CPU Freq] {e}")
                 
-                # Bug #2/#3: Use thread-safe flags instead of Tkinter API calls
-                overlay_active = self._overlay_active
-                enabled = self.config_mgr.get_overlay_conf().get("enabled_metrics", [])
-                needs_cpu_temp = True  # Always fetch; overhead is minimal
-                needs_gpu = True
-
-                if needs_cpu_temp:
+                # Thread-safe: always fetch all data; overhead is minimal vs complexity of conditional
+                if True:
                     self.cpu_fetcher.fetch(d)
 
                 try:
@@ -600,8 +593,11 @@ class LightMonitorApp(ctk.CTk):
 
                 with self.data_lock:
                     current_time = time.time()
-                    current_net_io = psutil.net_io_counters()
-                    current_disk_io = psutil.disk_io_counters(perdisk=True) or {}  # Bug #9: can return None
+                    current_net_io = psutil.net_io_counters()  # Note: None possible on some systems handled below
+                    if current_net_io is None:
+                        # R3-C: net_io_counters can return None on systems with no network adapters
+                        current_net_io = self.last_net_io  # reuse last snapshot; speeds stay 0
+                    current_disk_io = psutil.disk_io_counters(perdisk=True) or {}
                     time_diff = current_time - self.last_time
 
                     for letter, widgets in self.disk_widgets.items():
@@ -676,8 +672,9 @@ class LightMonitorApp(ctk.CTk):
                 if feat.get("csv_logging"):
                     try:
                         csv_path = os.path.join(self.config_mgr.app_dir, "log.csv")
-                        write_header = not os.path.exists(csv_path)
+                        # R3-E: Atomic open with 'a' avoids TOCTOU; write header only if file is empty
                         with open(csv_path, "a", newline='') as f:
+                            write_header = f.tell() == 0
                             writer = csv.writer(f)
                             if write_header:
                                 writer.writerow(["Time", "CPU_Use", "CPU_Temp", "GPU_Use", "GPU_Temp", "RAM_Use"])
@@ -685,7 +682,9 @@ class LightMonitorApp(ctk.CTk):
                     except Exception as e:
                         logger.error(f"[CSV Log] {e}")
                         
-                self.after(0, self.update_ui, d)
+                # R3-D: Guard against scheduling UI update after window closes
+                if self.running:
+                    self.after(0, self.update_ui, d)
 
             except Exception as e:
                 logger.error(f"[Main Loop] Error fetching data: {e}")

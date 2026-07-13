@@ -35,21 +35,25 @@ class CPUTempFetcher:
                 cmd = ["powershell", "-NoProfile", "-Command", "Get-CimInstance -Namespace root/WMI -ClassName MSAcpi_ThermalZoneTemperature | Select-Object -First 1 -ExpandProperty CurrentTemperature"]
                 res = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=4)
                 if res.stdout.strip():
-                    sys_data.cpu_temp = str(round((float(res.stdout.strip()) / 10) - 273.15, 1))
+                    # R3-F: Replace comma with dot for non-en-US locales (e.g. German: 2731,5)
+                    raw = res.stdout.strip().replace(',', '.')
+                    sys_data.cpu_temp = str(round((float(raw) / 10) - 273.15, 1))
             except: pass
         elif self.method == "perf_high":
             try:
                 cmd = ["powershell", "-NoProfile", "-Command", "(Get-Counter '\\Thermal Zone Information(*)\\High Precision Temperature' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CounterSamples | Select-Object -First 1 CookedValue).CookedValue"]
                 res = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=4)
                 if res.stdout.strip():
-                    sys_data.cpu_temp = str(round((float(res.stdout.strip()) / 10) - 273.15, 1))
+                    raw = res.stdout.strip().replace(',', '.')
+                    sys_data.cpu_temp = str(round((float(raw) / 10) - 273.15, 1))
             except: pass
         elif self.method == "perf_normal":
             try:
                 cmd = ["powershell", "-NoProfile", "-Command", "(Get-Counter '\\Thermal Zone Information(*)\\Temperature' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CounterSamples | Select-Object -First 1 CookedValue).CookedValue"]
                 res = subprocess.run(cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=4)
                 if res.stdout.strip():
-                    sys_data.cpu_temp = str(round(float(res.stdout.strip()) - 273.15, 1))
+                    raw = res.stdout.strip().replace(',', '.')
+                    sys_data.cpu_temp = str(round(float(raw) - 273.15, 1))
             except: pass
         else:
             sys_data.cpu_temp = "N/A"
