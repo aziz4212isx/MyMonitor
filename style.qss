@@ -1,0 +1,201 @@
+/* 
+    LightMonitor QSS Stylesheet
+    Dark Theme with Cyan Accents 
+*/
+
+/* Main Window & Defaults */
+QWidget {
+    background-color: #1a1a1a;
+    color: #e0e0e0;
+    font-family: "Segoe UI", "Arial", sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow {
+    background-color: #121212;
+}
+
+/* Tabs */
+QTabWidget::pane {
+    border: 1px solid #333333;
+    border-radius: 4px;
+    background: #1a1a1a;
+}
+
+QTabBar::tab {
+    background: #252525;
+    color: #aaaaaa;
+    padding: 8px 16px;
+    margin-right: 2px;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+
+QTabBar::tab:selected {
+    background: #1a1a1a;
+    color: #00E5FF;
+    border-bottom: 2px solid #00E5FF;
+}
+
+QTabBar::tab:hover:!selected {
+    background: #2a2a2a;
+    color: #cccccc;
+}
+
+/* Labels */
+QLabel {
+    background: transparent;
+}
+
+QLabel#TitleLabel {
+    font-size: 18px;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+QLabel#HeaderLabel {
+    font-size: 15px;
+    font-weight: bold;
+    color: #00E5FF;
+}
+
+/* Buttons */
+QPushButton {
+    background-color: #00E5FF;
+    color: #000000;
+    font-weight: bold;
+    border-radius: 4px;
+    padding: 6px 16px;
+}
+
+QPushButton:hover {
+    background-color: #00B8CC;
+}
+
+QPushButton:pressed {
+    background-color: #008B99;
+}
+
+QPushButton:disabled {
+    background-color: #333333;
+    color: #666666;
+}
+
+/* Checkboxes */
+QCheckBox {
+    spacing: 8px;
+}
+
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1px solid #555555;
+    background: #252525;
+}
+
+QCheckBox::indicator:hover {
+    border-color: #00E5FF;
+}
+
+QCheckBox::indicator:checked {
+    background: #00E5FF;
+    border-color: #00E5FF;
+    /* In a real scenario we'd use an image for the checkmark, but color difference is fine for Phase 1 */
+}
+
+/* Sliders */
+QSlider::groove:horizontal {
+    border-radius: 2px;
+    height: 6px;
+    background: #333333;
+}
+
+QSlider::handle:horizontal {
+    background: #00E5FF;
+    width: 14px;
+    height: 14px;
+    margin: -4px 0;
+    border-radius: 7px;
+}
+
+QSlider::handle:horizontal:hover {
+    background: #00B8CC;
+}
+
+QSlider::sub-page:horizontal {
+    background: #00E5FF;
+    border-radius: 2px;
+}
+
+/* Combo Box */
+QComboBox {
+    border: 1px solid #444444;
+    border-radius: 4px;
+    padding: 4px 8px;
+    background: #252525;
+}
+
+QComboBox:hover {
+    border-color: #00E5FF;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 20px;
+}
+
+QComboBox QAbstractItemView {
+    border: 1px solid #444444;
+    background: #252525;
+    selection-background-color: #00E5FF;
+    selection-color: #000000;
+}
+
+/* Input Fields */
+QLineEdit {
+    border: 1px solid #444444;
+    border-radius: 4px;
+    padding: 4px 8px;
+    background: #252525;
+}
+
+QLineEdit:focus {
+    border-color: #00E5FF;
+}
+
+/* Scrollbars */
+QScrollBar:vertical {
+    border: none;
+    background: #121212;
+    width: 10px;
+    margin: 0px 0px 0px 0px;
+}
+
+QScrollBar::handle:vertical {
+    background: #333333;
+    min-height: 20px;
+    border-radius: 5px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #555555;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+/* Progress Bar */
+QProgressBar {
+    border: none;
+    border-radius: 4px;
+    background-color: #2a2a2a;
+    text-align: center;
+    color: transparent; /* hide text if we want custom labels, but qt supports it */
+}
+
+QProgressBar::chunk {
+    background-color: #00E5FF;
+    border-radius: 4px;
+}
