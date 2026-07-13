@@ -370,6 +370,17 @@ class LightMonitorApp(ctk.CTk):
         self.ct_cb = ctk.CTkCheckBox(self.set_scroll, text="Click-Through Mode (HUD ignores mouse clicks)", variable=self.ct_var, command=self._save_settings)
         self.ct_cb.pack(anchor="w", padx=20, pady=5)
 
+        self.hud_opac_lbl = ctk.CTkLabel(self.set_scroll, text=f"Background Opacity: {self.config_mgr.get_overlay_conf().get('transparency', 0.85):.2f}")
+        self.hud_opac_lbl.pack(anchor="w", padx=20, pady=(5, 0))
+        self.hud_opac_slider = ctk.CTkSlider(self.set_scroll, from_=0.1, to=1.0, command=self._update_opacity_lbl)
+        self.hud_opac_slider.set(self.config_mgr.get_overlay_conf().get("transparency", 0.85))
+        self.hud_opac_slider.pack(fill="x", padx=20, pady=(0, 10))
+
+    def _update_opacity_lbl(self, val):
+        self.hud_opac_lbl.configure(text=f"Background Opacity: {val:.2f}")
+        if self.overlay_window and self.overlay_window.winfo_exists():
+            self.overlay_window.attributes("-alpha", val)
+
         # 2. FEATURES SECTION
         feat_conf = self.config_mgr.get_features_conf()
         
@@ -416,6 +427,7 @@ class LightMonitorApp(ctk.CTk):
         conf = self.config_mgr.get_overlay_conf()
         conf["enabled_metrics"] = [m for m, var in self.metric_vars.items() if var.get()]
         conf["click_through"] = self.ct_var.get()
+        conf["transparency"] = self.hud_opac_slider.get()
         
         # Features
         feat = self.config_mgr.get_features_conf()
