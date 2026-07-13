@@ -424,20 +424,25 @@ class LightMonitorApp(ctk.CTk):
             return sw
 
         # ── Helper: slider row ────────────────────────────────────────
-        def make_slider_row(parent, lbl_widget, slider_widget, desc):
+        def make_slider_row(parent, label_text, desc, slider_kwargs):
             f = ctk.CTkFrame(parent, fg_color="transparent")
             f.pack(fill="x", padx=8, pady=4)
             left = ctk.CTkFrame(f, fg_color="transparent")
             left.pack(side="left", fill="x", expand=True)
-            lbl_widget.configure(master=left, anchor="w",
-                                 font=ctk.CTkFont(size=13, weight="bold"))
+            
+            lbl_widget = ctk.CTkLabel(left, text=label_text, anchor="w",
+                                      font=ctk.CTkFont(size=13, weight="bold"))
             lbl_widget.pack(anchor="w")
+            
             ctk.CTkLabel(left, text=desc,
                          font=ctk.CTkFont(size=11), text_color="#888899",
                          anchor="w").pack(anchor="w")
-            slider_widget.configure(master=f, width=150)
+                         
+            slider_widget = ctk.CTkSlider(f, width=150, **slider_kwargs)
             slider_widget.pack(side="right", padx=8, pady=4)
+            
             ctk.CTkFrame(parent, height=1, fg_color="#2a2a3a").pack(fill="x", padx=8)
+            return lbl_widget, slider_widget
 
         # ════════════════════════════════════════════════════════════
         # SECTION 1 — HUD Metrics
@@ -510,22 +515,20 @@ class LightMonitorApp(ctk.CTk):
                         self.ct_var)
 
         # Opacity slider
-        self.hud_opac_lbl = ctk.CTkLabel(body2,
-            text=f"Opacity HUD: {overlay_conf.get('transparency', 0.85):.0%}")
-        self.hud_opac_slider = ctk.CTkSlider(body2, from_=0.1, to=1.0,
-                                              command=self._update_opacity_lbl)
+        self.hud_opac_lbl, self.hud_opac_slider = make_slider_row(body2,
+            label_text=f"Opacity HUD: {overlay_conf.get('transparency', 0.85):.0%}",
+            desc="Transparansi jendela HUD (0.1 = hampir transparan, 1.0 = penuh)",
+            slider_kwargs={"from_": 0.1, "to": 1.0, "command": self._update_opacity_lbl}
+        )
         self.hud_opac_slider.set(overlay_conf.get("transparency", 0.85))
-        make_slider_row(body2, self.hud_opac_lbl, self.hud_opac_slider,
-                        "Transparansi jendela HUD (0.1 = hampir transparan, 1.0 = penuh)")
 
         # Font size slider
-        self.hud_font_lbl = ctk.CTkLabel(body2,
-            text=f"Ukuran Font: {overlay_conf.get('font_size', 12)} px")
-        self.hud_font_slider = ctk.CTkSlider(body2, from_=8, to=20, number_of_steps=12,
-                                              command=self._update_font_lbl)
+        self.hud_font_lbl, self.hud_font_slider = make_slider_row(body2,
+            label_text=f"Ukuran Font: {overlay_conf.get('font_size', 12)} px",
+            desc="Ukuran teks pada overlay (8–20 px)",
+            slider_kwargs={"from_": 8, "to": 20, "number_of_steps": 12, "command": self._update_font_lbl}
+        )
         self.hud_font_slider.set(overlay_conf.get("font_size", 12))
-        make_slider_row(body2, self.hud_font_lbl, self.hud_font_slider,
-                        "Ukuran teks pada overlay (8–20 px)")
 
         # Layout + Theme — tabel 2 kolom
         lt_frame = ctk.CTkFrame(body2, fg_color="transparent")
