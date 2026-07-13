@@ -10,16 +10,23 @@ class CompactOverlay(ctk.CTkToplevel):
         
         self.overrideredirect(True)
         self.attributes("-topmost", True)
-        self.attributes("-alpha", self.conf.get("transparency", 0.85))
         
+        self.ghost_mode = self.conf.get("ghost_mode", False)
+        if self.ghost_mode and platform.system() == "Windows":
+            self.attributes("-transparentcolor", "#000001")
+            self.attributes("-alpha", 1.0)
+            self.configure(fg_color="#000001")
+            self.main_frame = ctk.CTkFrame(self, corner_radius=12, fg_color="#000001")
+        else:
+            self.attributes("-alpha", self.conf.get("transparency", 0.85))
+            self.configure(fg_color="#121212")
+            self.main_frame = ctk.CTkFrame(self, corner_radius=12, fg_color="#1a1a1a")
+
         pos = self.conf.get("position", {"x": 100, "y": 100})
         x = max(0, min(pos.get("x", 100), self.winfo_screenwidth() - 100))
         y = max(0, min(pos.get("y", 100), self.winfo_screenheight() - 50))
         self.geometry(f"+{x}+{y}")
-        
-        self.configure(fg_color="#121212")
-        
-        self.main_frame = ctk.CTkFrame(self, corner_radius=12, fg_color="#1a1a1a")
+            
         self.main_frame.pack(fill="both", expand=True, padx=2, pady=2)
         
         self._drag_start_x = 0

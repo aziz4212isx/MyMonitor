@@ -514,6 +514,12 @@ class LightMonitorApp(ctk.CTk):
                         "HUD tidak merespons klik mouse — klik akan diteruskan ke aplikasi di bawahnya.",
                         self.ct_var)
 
+        # Ghost Mode
+        self.ghost_var = ctk.BooleanVar(value=overlay_conf.get("ghost_mode", False))
+        make_toggle_row(body2, "Background Transparan Penuh (Ghost Mode)",
+                        "Hilangkan background sepenuhnya sehingga hanya teks yang terlihat (fitur Opacity diabaikan).",
+                        self.ghost_var)
+
         # Opacity slider
         self.hud_opac_lbl, self.hud_opac_slider = make_slider_row(body2,
             label_text=f"Opacity HUD: {overlay_conf.get('transparency', 0.85):.0%}",
@@ -650,8 +656,8 @@ class LightMonitorApp(ctk.CTk):
         conf = self.config_mgr.get_overlay_conf()
         conf["enabled_metrics"] = [m for m, var in self.metric_vars.items() if var.get()]
         conf["click_through"] = self.ct_var.get()
+        conf["ghost_mode"] = self.ghost_var.get()
         conf["transparency"] = self.hud_opac_slider.get()
-
         conf["layout"] = self.hud_layout_var.get()
         conf["theme"] = self.hud_theme_var.get()
         conf["font_size"] = int(self.hud_font_slider.get())

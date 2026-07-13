@@ -16,6 +16,7 @@ class ConfigManager:
             "overlay": {
                 "position": {"x": 100, "y": 100},
                 "click_through": False,
+                "ghost_mode": False,
                 "transparency": 0.85,
                 "layout": "RTSS Compact",
                 "theme": "Cyan",
