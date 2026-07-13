@@ -11,9 +11,12 @@ class ConfigManager:
         
         self.default_config = {
             "overlay": {
-                "transparency": 0.85,
                 "position": {"x": 100, "y": 100},
                 "click_through": False,
+                "transparency": 0.85,
+                "layout": "RTSS Compact",
+                "theme": "Cyan",
+                "font_size": 12,
                 "enabled_metrics": ["cpu_usage", "gpu_usage", "vram_usage", "ram_usage"],
                 "metric_order": ["cpu_usage", "gpu_usage", "vram_usage", "ram_usage"]
             },

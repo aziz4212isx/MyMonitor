@@ -376,11 +376,38 @@ class LightMonitorApp(ctk.CTk):
         self.hud_opac_slider.set(self.config_mgr.get_overlay_conf().get("transparency", 0.85))
         self.hud_opac_slider.pack(fill="x", padx=20, pady=(0, 10))
 
+
+    def _update_font_lbl(self, val):
+        val = int(val)
+        self.hud_font_lbl.configure(text=f"Font Size: {val}")
+        # Not applying live to avoid constant UI rebuilds during dragging
+
     def _update_opacity_lbl(self, val):
         self.hud_opac_lbl.configure(text=f"Background Opacity: {val:.2f}")
         if self.overlay_window and self.overlay_window.winfo_exists():
             self.overlay_window.attributes("-alpha", val)
 
+
+        # --- HUD CUSTOMIZATION ---
+        cust_frame = ctk.CTkFrame(self.set_scroll, fg_color="transparent")
+        cust_frame.pack(fill="x", padx=20, pady=5)
+        
+        ctk.CTkLabel(cust_frame, text="Layout Mode:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        self.hud_layout_var = ctk.StringVar(value=self.config_mgr.get_overlay_conf().get("layout", "RTSS Compact"))
+        self.hud_layout_menu = ctk.CTkOptionMenu(cust_frame, values=["Classic (List)", "RTSS Compact"], variable=self.hud_layout_var, command=lambda x: self._save_settings())
+        self.hud_layout_menu.grid(row=0, column=1, sticky="w", padx=5, pady=2)
+        
+        ctk.CTkLabel(cust_frame, text="Color Theme:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        self.hud_theme_var = ctk.StringVar(value=self.config_mgr.get_overlay_conf().get("theme", "Cyan"))
+        self.hud_theme_menu = ctk.CTkOptionMenu(cust_frame, values=["Cyan", "Razer Green", "Afterburner Orange", "Pink", "White"], variable=self.hud_theme_var, command=lambda x: self._save_settings())
+        self.hud_theme_menu.grid(row=1, column=1, sticky="w", padx=5, pady=2)
+        
+        self.hud_font_lbl = ctk.CTkLabel(cust_frame, text=f"Font Size: {self.config_mgr.get_overlay_conf().get('font_size', 12)}")
+        self.hud_font_lbl.grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        self.hud_font_slider = ctk.CTkSlider(cust_frame, from_=8, to=20, number_of_steps=12, command=self._update_font_lbl)
+        self.hud_font_slider.set(self.config_mgr.get_overlay_conf().get("font_size", 12))
+        self.hud_font_slider.grid(row=2, column=1, sticky="ew", padx=5, pady=2)
+        
         # 2. FEATURES SECTION
         feat_conf = self.config_mgr.get_features_conf()
         
@@ -428,6 +455,11 @@ class LightMonitorApp(ctk.CTk):
         conf["enabled_metrics"] = [m for m, var in self.metric_vars.items() if var.get()]
         conf["click_through"] = self.ct_var.get()
         conf["transparency"] = self.hud_opac_slider.get()
+
+        conf["layout"] = self.hud_layout_var.get()
+        conf["theme"] = self.hud_theme_var.get()
+        conf["font_size"] = int(self.hud_font_slider.get())
+
         
         # Features
         feat = self.config_mgr.get_features_conf()
