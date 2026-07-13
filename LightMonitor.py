@@ -604,7 +604,9 @@ class LightMonitorApp(ctk.CTk):
                         try:
                             usage = psutil.disk_usage(widgets["mount"])
                             d.disk_data[letter] = {"pct": usage.percent, "free": usage.free / (1024**3)}
-                        except Exception as e: logger.error(f"[Disk Usage {letter}] {e}")
+                        except Exception as e:
+                            logger.error(f"[Disk Usage {letter}] {e}")
+                            d.disk_data[letter] = None  # Explicit marker: drive unreadable → show '--'
 
 
                     d_read = d_write = 0.0
@@ -790,10 +792,16 @@ class LightMonitorApp(ctk.CTk):
         for letter, w in self.disk_widgets.items():
             if letter in d.disk_data:
                 v = d.disk_data[letter]
-                c_disk = get_color_by_value(v['pct'], "usage")
-                w["lbl"].configure(text=f"{letter}: {v['pct']}% (Free: {v['free']:.1f} GB)", text_color=c_disk)
-                w["prog"].set(v['pct'] / 100.0)
-                w["prog"].configure(progress_color=c_disk)
+                if v is None:
+                    # Drive unreadable — show '--' and reset bar
+                    w["lbl"].configure(text=f"{letter}: -- (tidak terbaca)", text_color="gray")
+                    w["prog"].set(0)
+                    w["prog"].configure(progress_color="gray")
+                else:
+                    c_disk = get_color_by_value(v['pct'], "usage")
+                    w["lbl"].configure(text=f"{letter}: {v['pct']}% (Free: {v['free']:.1f} GB)", text_color=c_disk)
+                    w["prog"].set(v['pct'] / 100.0)
+                    w["prog"].configure(progress_color=c_disk)
                 
         if "GLOBAL_IO" in d.disk_data:
             g_io = d.disk_data["GLOBAL_IO"]
