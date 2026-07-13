@@ -6,6 +6,7 @@ echo ===================================================
 echo.
 echo Menginstal PyInstaller (jika belum tersedia)...
 pip install pyinstaller
+pip install keyboard
 
 echo.
 echo Menutup aplikasi jika sedang berjalan agar file tidak terkunci...

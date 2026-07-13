@@ -15,6 +15,21 @@ from overlay import CompactOverlay
 from gpu_utils import GPUFetcher
 from cpu_temp_utils import CPUTempFetcher
 import ctypes
+import logging
+import csv
+
+try:
+    import keyboard
+except:
+    pass
+
+
+logger = logging.getLogger("LightMonitor")
+logger.setLevel(logging.ERROR)
+try:
+    fh = logging.FileHandler(os.path.join(os.getenv('APPDATA') or os.path.expanduser('~'), 'LightMonitor', 'error_log.txt'))
+    logger.addHandler(fh)
+except: pass
 import os
 import sys
 
@@ -58,6 +73,8 @@ class SystemData:
     gpu_mem: str = "--"
     gpu_pow: str = "--"
     gpu_pow_limit: str = "--"
+    top5_cpu: List[str] = field(default_factory=list)
+    top5_ram: List[str] = field(default_factory=list)
     gpu_c_clock: str = "--"
     gpu_m_clock: str = "--"
     gpu_fan: str = "--"
@@ -100,6 +117,10 @@ class LightMonitorApp(ctk.CTk):
         self.topmost_switch.pack(side="right")
         
         self.hud_btn = ctk.CTkButton(self.header_frame, text="HUD Mode", width=80, command=self.toggle_overlay)
+
+        self.after(5000, self.watchdog_check)
+        self._apply_hotkey()
+
         self.hud_btn.pack(side="right", padx=10)
         
         self.config_mgr = ConfigManager()
@@ -112,12 +133,19 @@ class LightMonitorApp(ctk.CTk):
         self.tab_cpu = self.tabview.add("CPU")
         self.tab_gpu = self.tabview.add("GPU")
         self.tab_storage = self.tabview.add("Storage & Network")
-        self.tab_settings = self.tabview.add("HUD Settings")
+        self.tab_settings = self.tabview.add("Settings")
 
         # History Data (60 points ~ 2 minutes at 2s interval)
         self.hist_cpu = collections.deque([0]*60, maxlen=60)
         self.hist_ram = collections.deque([0]*60, maxlen=60)
         self.hist_gpu = collections.deque([0]*60, maxlen=60)
+        
+        self.stats = {
+            "cpu_sum": 0.0, "cpu_count": 0, "cpu_min": 100.0, "cpu_max": 0.0,
+            "gpu_sum": 0.0, "gpu_count": 0, "gpu_min": 100.0, "gpu_max": 0.0
+        }
+        self.last_top5_time = 0
+        self.last_alert_time = 0
 
         # Thread safety
         self.data_lock = threading.Lock()
@@ -192,6 +220,17 @@ class LightMonitorApp(ctk.CTk):
         else:
             l = ctk.CTkLabel(self.tab_overview, text="No Supported GPU detected", font=ctk.CTkFont(size=12, slant="italic"))
             l.pack(anchor="w", padx=20, pady=5)
+
+        # Stats & Top 5 Frame
+        self.ov_bottom_frame = ctk.CTkFrame(self.tab_overview, fg_color="transparent")
+        self.ov_bottom_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        self.stats_lbl = ctk.CTkLabel(self.ov_bottom_frame, text="Statistics (Session)\nCPU: Min -- | Max -- | Avg --\nGPU: Min -- | Max -- | Avg --", justify="left")
+        self.stats_lbl.pack(side="left", anchor="nw")
+        
+        self.top5_lbl = ctk.CTkLabel(self.ov_bottom_frame, text="Top 5 Processes\n(Disabled in Settings)", justify="left", font=ctk.CTkFont(family="Consolas", size=11))
+        self.top5_lbl.pack(side="right", anchor="ne")
+
 
     def _build_cpu_ui(self):
         self.cpu_frame = ctk.CTkScrollableFrame(self.tab_cpu)
@@ -308,7 +347,8 @@ class LightMonitorApp(ctk.CTk):
         self.set_scroll = ctk.CTkScrollableFrame(self.tab_settings)
         self.set_scroll.pack(fill="both", expand=True)
 
-        lbl = ctk.CTkLabel(self.set_scroll, text="HUD Overlay Metrics", font=ctk.CTkFont(size=16, weight="bold"))
+        # 1. HUD SECTION
+        lbl = ctk.CTkLabel(self.set_scroll, text="HUD Overlay Options", font=ctk.CTkFont(size=16, weight="bold"))
         lbl.pack(anchor="w", padx=10, pady=(5, 10))
 
         self.metric_vars = {}
@@ -318,27 +358,125 @@ class LightMonitorApp(ctk.CTk):
 
         enabled = self.config_mgr.get_overlay_conf().get("enabled_metrics", [])
 
-        for m in available_metrics:
+        hud_grid = ctk.CTkFrame(self.set_scroll, fg_color="transparent")
+        hud_grid.pack(fill="x", padx=20, pady=5)
+        for i, m in enumerate(available_metrics):
             var = ctk.BooleanVar(value=(m in enabled))
             self.metric_vars[m] = var
-            cb = ctk.CTkCheckBox(self.set_scroll, text=m, variable=var, command=self._save_overlay_settings)
-            cb.pack(anchor="w", padx=20, pady=2)
-
-        lbl2 = ctk.CTkLabel(self.set_scroll, text="HUD Options", font=ctk.CTkFont(size=16, weight="bold"))
-        lbl2.pack(anchor="w", padx=10, pady=(20, 10))
+            cb = ctk.CTkCheckBox(hud_grid, text=m, variable=var, command=self._save_settings)
+            cb.grid(row=i//3, column=i%3, padx=10, pady=2, sticky="w")
 
         self.ct_var = ctk.BooleanVar(value=self.config_mgr.get_overlay_conf().get("click_through", False))
-        self.ct_cb = ctk.CTkCheckBox(self.set_scroll, text="Click-Through Mode (HUD ignores mouse clicks)", variable=self.ct_var, command=self._save_overlay_settings)
-        self.ct_cb.pack(anchor="w", padx=20, pady=2)
+        self.ct_cb = ctk.CTkCheckBox(self.set_scroll, text="Click-Through Mode (HUD ignores mouse clicks)", variable=self.ct_var, command=self._save_settings)
+        self.ct_cb.pack(anchor="w", padx=20, pady=5)
 
-    def _save_overlay_settings(self):
+        # 2. FEATURES SECTION
+        feat_conf = self.config_mgr.get_features_conf()
+        
+        lbl_f = ctk.CTkLabel(self.set_scroll, text="Core Features", font=ctk.CTkFont(size=16, weight="bold"))
+        lbl_f.pack(anchor="w", padx=10, pady=(20, 10))
+
+        self.feat_top5_var = ctk.BooleanVar(value=feat_conf.get("top5_process", False))
+        ctk.CTkCheckBox(self.set_scroll, text="Show Top 5 Process (CPU/RAM Consumer)", variable=self.feat_top5_var, command=self._save_settings).pack(anchor="w", padx=20, pady=2)
+
+        self.feat_csv_var = ctk.BooleanVar(value=feat_conf.get("csv_logging", False))
+        ctk.CTkCheckBox(self.set_scroll, text="Log Data to CSV", variable=self.feat_csv_var, command=self._save_settings).pack(anchor="w", padx=20, pady=2)
+        
+        self.feat_startup_var = ctk.BooleanVar(value=feat_conf.get("run_on_startup", False))
+        ctk.CTkCheckBox(self.set_scroll, text="Run on Windows Startup", variable=self.feat_startup_var, command=self._save_settings).pack(anchor="w", padx=20, pady=2)
+
+        self.feat_hotkey_var = ctk.BooleanVar(value=feat_conf.get("hotkey_enabled", False))
+        ctk.CTkCheckBox(self.set_scroll, text="Enable Global Hotkey (Ctrl+Alt+M to toggle HUD)\n*Requires Run As Administrator*", variable=self.feat_hotkey_var, command=self._save_settings).pack(anchor="w", padx=20, pady=(2, 10))
+
+
+        # 3. ALERTS SECTION
+        lbl_a = ctk.CTkLabel(self.set_scroll, text="Alerts & Thresholds", font=ctk.CTkFont(size=16, weight="bold"))
+        lbl_a.pack(anchor="w", padx=10, pady=(20, 10))
+
+        self.alert_en_var = ctk.BooleanVar(value=feat_conf.get("alerts_enabled", False))
+        ctk.CTkCheckBox(self.set_scroll, text="Enable Windows Notifications & Sound", variable=self.alert_en_var, command=self._save_settings).pack(anchor="w", padx=20, pady=5)
+
+        temp_frame = ctk.CTkFrame(self.set_scroll, fg_color="transparent")
+        temp_frame.pack(fill="x", padx=20, pady=2)
+        
+        ctk.CTkLabel(temp_frame, text="CPU Alert Temp (°C):").pack(side="left")
+        self.alert_cpu_entry = ctk.CTkEntry(temp_frame, width=50)
+        self.alert_cpu_entry.insert(0, str(feat_conf.get("alert_cpu_temp", 85)))
+        self.alert_cpu_entry.pack(side="left", padx=10)
+        
+        ctk.CTkLabel(temp_frame, text="GPU Alert Temp (°C):").pack(side="left", padx=(20,0))
+        self.alert_gpu_entry = ctk.CTkEntry(temp_frame, width=50)
+        self.alert_gpu_entry.insert(0, str(feat_conf.get("alert_gpu_temp", 85)))
+        self.alert_gpu_entry.pack(side="left", padx=10)
+
+        ctk.CTkButton(self.set_scroll, text="Save Settings", command=self._save_settings, width=120).pack(anchor="w", padx=20, pady=20)
+
+    def _save_settings(self):
+        # Overlay
         conf = self.config_mgr.get_overlay_conf()
-        enabled = [m for m, var in self.metric_vars.items() if var.get()]
-        conf["enabled_metrics"] = enabled
+        conf["enabled_metrics"] = [m for m, var in self.metric_vars.items() if var.get()]
         conf["click_through"] = self.ct_var.get()
+        
+        # Features
+        feat = self.config_mgr.get_features_conf()
+        feat["top5_process"] = self.feat_top5_var.get()
+        feat["csv_logging"] = self.feat_csv_var.get()
+        feat["run_on_startup"] = self.feat_startup_var.get()
+        feat["hotkey_enabled"] = self.feat_hotkey_var.get()
+        self._apply_hotkey()
+        feat["alerts_enabled"] = self.alert_en_var.get()
+        try:
+            feat["alert_cpu_temp"] = int(self.alert_cpu_entry.get())
+            feat["alert_gpu_temp"] = int(self.alert_gpu_entry.get())
+        except:
+            pass
+
         self.config_mgr.save_config()
+        self._apply_startup_registry(feat["run_on_startup"])
+        
         if self.overlay_window and self.overlay_window.winfo_exists():
             self.overlay_window.rebuild_if_needed()
+
+
+    def _apply_hotkey(self):
+        try:
+            import keyboard
+            keyboard.unhook_all()
+            if self.config_mgr.get_features_conf().get("hotkey_enabled"):
+                keyboard.add_hotkey('ctrl+alt+m', lambda: self.after(0, self.toggle_overlay))
+        except:
+            pass
+
+    def watchdog_check(self):
+        if self.running and time.time() - self.last_time > 15:
+            logger.error("[Watchdog] Thread frozen for >15s. Restarting fetch_data_loop...")
+            self.running = False
+            try:
+                self.data_thread.join(timeout=1.0)
+            except: pass
+            self.running = True
+            self.data_thread = threading.Thread(target=self.fetch_data_loop, daemon=True)
+            self.data_thread.start()
+        
+        self.after(5000, self.watchdog_check)
+
+    def _apply_startup_registry(self, enable):
+        import winreg
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        app_name = "LightMonitor"
+        exe_path = os.path.abspath(sys.argv[0])
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+            if enable:
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+            else:
+                try:
+                    winreg.DeleteValue(key, app_name)
+                except FileNotFoundError:
+                    pass
+            winreg.CloseKey(key)
+        except Exception as e:
+            print(f"[Registry] {e}")
 
     def fetch_data_loop(self):
         while self.running:
@@ -347,15 +485,15 @@ class LightMonitorApp(ctk.CTk):
                 try:
                     bt = datetime.datetime.fromtimestamp(psutil.boot_time())
                     d.uptime = str(datetime.datetime.now() - bt).split('.')[0]
-                except Exception as e: print(f"[Uptime] {e}")
+                except Exception as e: logger.error(f"[Uptime] {e}")
 
                 try:
                     d.cpu_use = psutil.cpu_percent(interval=None)
                     d.cpu_cores = psutil.cpu_percent(interval=None, percpu=True)
-                except Exception as e: print(f"[CPU Usage] {e}")
+                except Exception as e: logger.error(f"[CPU Usage] {e}")
                     
                 try: d.cpu_freq = str(round(psutil.cpu_freq().current))
-                except Exception as e: print(f"[CPU Freq] {e}")
+                except Exception as e: logger.error(f"[CPU Freq] {e}")
                 
                 main_active = self.state() != 'iconic' and self.state() != 'withdrawn'
                 overlay_active = self.overlay_window is not None and self.overlay_window.winfo_exists()
@@ -372,7 +510,7 @@ class LightMonitorApp(ctk.CTk):
                     d.ram_used = ram.used / (1024**3)
                     d.ram_total = ram.total / (1024**3)
                     d.swap_pct = psutil.swap_memory().percent
-                except Exception as e: print(f"[Memory] {e}")
+                except Exception as e: logger.error(f"[Memory] {e}")
 
                 if self.gpu_fetcher.is_valid() and needs_gpu:
                     self.gpu_fetcher.fetch(d)
@@ -387,10 +525,18 @@ class LightMonitorApp(ctk.CTk):
                         try:
                             usage = psutil.disk_usage(widgets["mount"])
                             d.disk_data[letter] = {"pct": usage.percent, "free": usage.free / (1024**3)}
-                        except Exception as e: print(f"[Disk Usage {letter}] {e}")
+                        except Exception as e: logger.error(f"[Disk Usage {letter}] {e}")
+
 
                     d_read = d_write = 0.0
-                    if time_diff > 0:
+                    if time_diff > 10:
+                        # System probably slept or lagged heavily. Skip calc to prevent massive spikes.
+                        self.last_net_io = current_net_io
+                        self.last_disk_io = current_disk_io
+                        self.last_time = current_time
+                        time_diff = 0
+                    elif time_diff > 0:
+
                         total_read_now = sum(disk.read_bytes for disk in current_disk_io.values())
                         total_write_now = sum(disk.write_bytes for disk in current_disk_io.values())
                         total_read_last = sum(disk.read_bytes for disk in self.last_disk_io.values())
@@ -418,15 +564,97 @@ class LightMonitorApp(ctk.CTk):
                     except:
                         self.hist_gpu.append(0.0)
 
+
+                # -- FEATURES LOGIC --
+                feat = self.config_mgr.get_features_conf()
+                
+                # 1. Top 5 Process (every ~5 seconds)
+                if feat.get("top5_process"):
+                    if current_time - self.last_top5_time >= 5:
+                        try:
+                            procs = []
+                            for p in psutil.process_iter(['name', 'cpu_percent', 'memory_percent']):
+                                try:
+                                    info = p.info
+                                    if info['name'] and info['name'] != 'System Idle Process':
+                                        procs.append(info)
+                                except: pass
+                            # CPU Top
+                            top_cpu = sorted(procs, key=lambda x: x['cpu_percent'] or 0.0, reverse=True)[:5]
+                            d.top5_cpu = [f"{p['name'][:15]}: {p['cpu_percent']}%" for p in top_cpu]
+                            # RAM Top
+                            top_ram = sorted(procs, key=lambda x: x['memory_percent'] or 0.0, reverse=True)[:5]
+                            d.top5_ram = [f"{p['name'][:15]}: {p['memory_percent']:.1f}%" for p in top_ram]
+                        except Exception as e:
+                            logger.error(f"[Top5] {e}")
+                        self.last_top5_time = current_time
+
+                # 2. CSV Logging
+                if feat.get("csv_logging"):
+                    try:
+                        csv_path = os.path.join(self.config_mgr.app_dir, "log.csv")
+                        write_header = not os.path.exists(csv_path)
+                        with open(csv_path, "a", newline='') as f:
+                            writer = csv.writer(f)
+                            if write_header:
+                                writer.writerow(["Time", "CPU_Use", "CPU_Temp", "GPU_Use", "GPU_Temp", "RAM_Use"])
+                            writer.writerow([datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), d.cpu_use, d.cpu_temp, d.gpu_use, d.gpu_temp, d.ram_pct])
+                    except Exception as e:
+                        logger.error(f"[CSV Log] {e}")
+                        
                 self.after(0, self.update_ui, d)
 
             except Exception as e:
-                print(f"[Main Loop] Error fetching data: {e}")
+                logger.error(f"[Main Loop] Error fetching data: {e}")
             
             time.sleep(2) 
 
     def update_ui(self, d: SystemData):
         # COLORS
+
+        # Stats Update
+        self.stats["cpu_sum"] += d.cpu_use
+        self.stats["cpu_count"] += 1
+        if d.cpu_use < self.stats["cpu_min"]: self.stats["cpu_min"] = d.cpu_use
+        if d.cpu_use > self.stats["cpu_max"]: self.stats["cpu_max"] = d.cpu_use
+        
+        try:
+            gu = float(d.gpu_use)
+            self.stats["gpu_sum"] += gu
+            self.stats["gpu_count"] += 1
+            if gu < self.stats["gpu_min"]: self.stats["gpu_min"] = gu
+            if gu > self.stats["gpu_max"]: self.stats["gpu_max"] = gu
+        except: pass
+        
+        c_avg = self.stats["cpu_sum"] / self.stats["cpu_count"]
+        g_avg = (self.stats["gpu_sum"] / self.stats["gpu_count"]) if self.stats["gpu_count"] > 0 else 0.0
+        
+        self.stats_lbl.configure(text=f"Statistics (Session)\nCPU: Min {self.stats['cpu_min']}% | Max {self.stats['cpu_max']}% | Avg {c_avg:.1f}%\nGPU: Min {self.stats['gpu_min']}% | Max {self.stats['gpu_max']}% | Avg {g_avg:.1f}%")
+
+        feat = self.config_mgr.get_features_conf()
+        if feat.get("top5_process"):
+            txt = "Top 5 CPU:\n" + "\n".join(d.top5_cpu) + "\n\nTop 5 RAM:\n" + "\n".join(d.top5_ram)
+            self.top5_lbl.configure(text=txt)
+        else:
+            self.top5_lbl.configure(text="Top 5 Processes\n(Disabled in Settings)")
+
+        # Alerts
+        if feat.get("alerts_enabled"):
+            now = time.time()
+            if now - self.last_alert_time >= 60: # Cooldown 60s
+                try:
+                    cpu_t = float(d.cpu_temp)
+                    if cpu_t >= feat.get("alert_cpu_temp", 85):
+                        self._trigger_alert("CPU", cpu_t)
+                        self.last_alert_time = now
+                except: pass
+                try:
+                    gpu_t = float(d.gpu_temp)
+                    if gpu_t >= feat.get("alert_gpu_temp", 85):
+                        self._trigger_alert("GPU", gpu_t)
+                        self.last_alert_time = now
+                except: pass
+
         c_cpu = get_color_by_value(d.cpu_use, "usage")
         t_cpu = get_color_by_value(d.cpu_temp, "temp")
         c_ram = get_color_by_value(d.ram_pct, "usage")
@@ -498,6 +726,19 @@ class LightMonitorApp(ctk.CTk):
         
         if self.overlay_window and self.overlay_window.winfo_exists():
             self.overlay_window.update_data(d)
+
+
+    def _trigger_alert(self, hw, temp):
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except: pass
+        tl = tk.Toplevel(self)
+        tl.title("Warning!")
+        tl.geometry("250x100")
+        tl.attributes("-topmost", True)
+        ctk.CTkLabel(tl, text=f"🔥 {hw} Overheating!\nTemp: {temp}°C", text_color="red", font=ctk.CTkFont(size=16, weight="bold")).pack(expand=True)
+        tl.after(5000, tl.destroy)
 
 if __name__ == "__main__":
     try:

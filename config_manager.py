@@ -16,6 +16,15 @@ class ConfigManager:
                 "click_through": False,
                 "enabled_metrics": ["cpu_usage", "gpu_usage", "vram_usage", "ram_usage"],
                 "metric_order": ["cpu_usage", "gpu_usage", "vram_usage", "ram_usage"]
+            },
+            "features": {
+                "top5_process": False,
+                "csv_logging": False,
+                "run_on_startup": False,
+                "alerts_enabled": False,
+                "alert_cpu_temp": 85,
+                "alert_gpu_temp": 85,
+                "hotkey_enabled": False
             }
         }
         self.config = self.load_config()
@@ -45,3 +54,11 @@ class ConfigManager:
             if key not in self.config["overlay"]:
                 self.config["overlay"][key] = val
         return self.config["overlay"]
+
+    def get_features_conf(self):
+        if "features" not in self.config:
+            self.config["features"] = self.default_config["features"]
+        for key, val in self.default_config["features"].items():
+            if key not in self.config["features"]:
+                self.config["features"][key] = val
+        return self.config["features"]
