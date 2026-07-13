@@ -17,6 +17,7 @@ from cpu_temp_utils import CPUTempFetcher
 import ctypes
 import logging
 import csv
+import traceback
 
 try:
     import keyboard
@@ -25,11 +26,16 @@ except:
 
 
 logger = logging.getLogger("LightMonitor")
-logger.setLevel(logging.ERROR)
+logger.setLevel(logging.DEBUG)
+# Always log to stderr so errors are visible in terminal
+_sh = logging.StreamHandler()
+_sh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+logger.addHandler(_sh)
 try:
     _log_dir = os.path.join(os.getenv('APPDATA') or os.path.expanduser('~'), 'LightMonitor')
     os.makedirs(_log_dir, exist_ok=True)
     fh = logging.FileHandler(os.path.join(_log_dir, 'error_log.txt'))
+    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logger.addHandler(fh)
 except Exception:
     pass  # Logging is non-critical; silently skip if unavailable
@@ -581,9 +587,8 @@ class LightMonitorApp(ctk.CTk):
                     d.cpu_freq = str(round(freq.current)) if freq else "N/A"
                 except Exception as e: logger.error(f"[CPU Freq] {e}")
                 
-                # Thread-safe: always fetch all data; overhead is minimal vs complexity of conditional
-                if True:
-                    self.cpu_fetcher.fetch(d)
+                # Always fetch all hardware data
+                self.cpu_fetcher.fetch(d)
 
                 try:
                     ram = psutil.virtual_memory()
@@ -593,7 +598,7 @@ class LightMonitorApp(ctk.CTk):
                     d.swap_pct = psutil.swap_memory().percent
                 except Exception as e: logger.error(f"[Memory] {e}")
 
-                if self.gpu_fetcher.is_valid() and needs_gpu:
+                if self.gpu_fetcher.is_valid():
                     self.gpu_fetcher.fetch(d)
 
                 with self.data_lock:
@@ -694,7 +699,14 @@ class LightMonitorApp(ctk.CTk):
                     self.after(0, self.update_ui, d)
 
             except Exception as e:
-                logger.error(f"[Main Loop] Error fetching data: {e}")
+                tb = traceback.format_exc()
+                logger.error(f"[Main Loop] CRASH:\n{tb}")
+                # Show error in UI so user can see it without terminal
+                try:
+                    self.after(0, self.stats_lbl.configure,
+                               {"text": f"[ERROR] Loop crash:\n{type(e).__name__}: {e}\nCek error_log.txt"})
+                except Exception:
+                    pass
             
             time.sleep(2) 
 
